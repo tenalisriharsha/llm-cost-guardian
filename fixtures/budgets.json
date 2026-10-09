@@ -1,0 +1,20 @@
+[
+  {
+    "team": "platform",
+    "period": "daily",
+    "softLimitUsd": 0.3,
+    "hardLimitUsd": 0.5
+  },
+  {
+    "team": "growth",
+    "period": "daily",
+    "softLimitUsd": 0.5,
+    "hardLimitUsd": 1
+  },
+  {
+    "team": "research",
+    "period": "daily",
+    "softLimitUsd": 0.2,
+    "hardLimitUsd": 0.35
+  }
+]
