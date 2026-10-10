@@ -34,6 +34,20 @@ describe("InMemoryEventStore", () => {
     store.appendMany([makeEvent({ id: "a" }), makeEvent({ id: "b" })]);
     expect(store.all().map((e) => e.id)).toEqual(["a", "b"]);
   });
+
+  it("ignores duplicate ids on append (idempotent ingestion)", () => {
+    const store = new InMemoryEventStore();
+    store.append(makeEvent({ id: "evt-1", costUsd: 0.001 }));
+    store.append(makeEvent({ id: "evt-1", costUsd: 999 }));
+    expect(store.all()).toHaveLength(1);
+    expect(store.all()[0]?.costUsd).toBe(0.001);
+  });
+
+  it("ignores duplicate ids within appendMany", () => {
+    const store = new InMemoryEventStore();
+    store.appendMany([makeEvent({ id: "a" }), makeEvent({ id: "a" }), makeEvent({ id: "b" })]);
+    expect(store.all().map((e) => e.id)).toEqual(["a", "b"]);
+  });
 });
 
 describe("JsonFileEventStore", () => {
@@ -60,5 +74,17 @@ describe("JsonFileEventStore", () => {
   it("starts empty when the file does not exist yet", () => {
     const store = new JsonFileEventStore(join(dir, "missing.jsonl"));
     expect(store.all()).toEqual([]);
+  });
+
+  it("ignores duplicate ids, including across process restarts", () => {
+    const filePath = join(dir, "events.jsonl");
+    const store = new JsonFileEventStore(filePath);
+    store.append(makeEvent({ id: "evt-1" }));
+    store.append(makeEvent({ id: "evt-1" }));
+    expect(store.all()).toHaveLength(1);
+
+    const reloaded = new JsonFileEventStore(filePath);
+    reloaded.appendMany([makeEvent({ id: "evt-1" }), makeEvent({ id: "evt-2" })]);
+    expect(reloaded.all().map((e) => e.id)).toEqual(["evt-1", "evt-2"]);
   });
 });

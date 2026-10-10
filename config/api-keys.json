@@ -1,0 +1,17 @@
+[
+  {
+    "key": "demo_platform_f3a1c9",
+    "apiKeyId": "key-platform-prod",
+    "team": "platform"
+  },
+  {
+    "key": "demo_growth_7b2e40",
+    "apiKeyId": "key-growth-prod",
+    "team": "growth"
+  },
+  {
+    "key": "demo_research_d8c156",
+    "apiKeyId": "key-research-prod",
+    "team": "research"
+  }
+]

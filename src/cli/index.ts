@@ -36,10 +36,12 @@ program
     const { accepted, rejected } = ingestBatch(raw);
 
     const store = new JsonFileEventStore(opts.store);
-    store.appendMany(accepted);
+    const stored = store.appendMany(accepted);
+    const duplicates = accepted.length - stored.length;
 
-    console.log(`Ingested ${accepted.length}/${raw.length} events from ${file}`);
-    console.log(`Accepted spend: ${formatUsd(totalSpendUsd(accepted))}`);
+    console.log(`Ingested ${stored.length}/${raw.length} events from ${file}`);
+    if (duplicates > 0) console.log(`Skipped ${duplicates} duplicate event(s) already in the store`);
+    console.log(`Accepted spend: ${formatUsd(totalSpendUsd(stored))}`);
     console.log(`Store: ${opts.store} (${store.all().length} events total)`);
 
     if (rejected.length > 0) {

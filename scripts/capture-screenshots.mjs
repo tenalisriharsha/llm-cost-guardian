@@ -4,12 +4,17 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "playwright";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const SCREENSHOTS_DIR = join(ROOT, "docs", "screenshots");
 const SPLIT_MARKER = "__LLM_COST_GUARDIAN_SCENE_SPLIT__";
+
+const API_PORT = 4321;
+const API_KEY = "demo_platform_f3a1c9"; // from config/api-keys.json (platform team, demo-only key)
+const TODAY = new Date().toISOString().slice(0, 10); // so the budget-status scene sees today's spend
 
 rmSync(join(ROOT, "data"), { recursive: true, force: true });
 mkdirSync(SCREENSHOTS_DIR, { recursive: true });
@@ -50,6 +55,41 @@ const SCENES = [
     commands: [
       { cmd: "node dist/cli/index.js ingest fixtures/anomaly-events.jsonl --store data/events-anomaly.jsonl" },
       { cmd: "node dist/cli/index.js anomaly scan --store data/events-anomaly.jsonl", captureExit: true },
+    ],
+  },
+  {
+    file: "07-api-ingest-events.png",
+    commands: [
+      {
+        cmd:
+          `curl -s -X POST http://localhost:${API_PORT}/events ` +
+          `-H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" ` +
+          `-d '[{"timestamp":"${TODAY}T09:00:00.000Z","provider":"anthropic","model":"claude-opus-5-5","inputTokens":4200,"outputTokens":1800},` +
+          `{"timestamp":"${TODAY}T10:15:00.000Z","provider":"openai","model":"gpt-4o-mini","inputTokens":900,"outputTokens":400},` +
+          `{"timestamp":"${TODAY}T11:00:00.000Z","team":"growth","provider":"openai","model":"gpt-4o-mini","inputTokens":100,"outputTokens":50}]' | jq .`,
+      },
+    ],
+  },
+  {
+    file: "08-api-report-by-model.png",
+    commands: [
+      {
+        cmd: `curl -s "http://localhost:${API_PORT}/report?by=model" -H "Authorization: Bearer ${API_KEY}" | jq .`,
+      },
+    ],
+  },
+  {
+    file: "09-api-budget-status.png",
+    commands: [
+      {
+        cmd:
+          `curl -s -X PUT http://localhost:${API_PORT}/budgets/daily ` +
+          `-H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" ` +
+          `-d '{"softLimitUsd":0.01,"hardLimitUsd":0.05}' | jq .`,
+      },
+      {
+        cmd: `curl -s http://localhost:${API_PORT}/budgets/status -H "Authorization: Bearer ${API_KEY}" | jq .`,
+      },
     ],
   },
 ];
@@ -166,7 +206,32 @@ function sceneToHtml(scene) {
 </html>`;
 }
 
+async function waitForHealth(url, attempts = 50) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return;
+    } catch {
+      // server not accepting connections yet
+    }
+    await sleep(100);
+  }
+  throw new Error(`API server did not become healthy at ${url}`);
+}
+
 async function main() {
+  const apiServer = spawn("node", ["dist/api/index.js"], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      PORT: String(API_PORT),
+      DB_PATH: "data/api-demo.db",
+      API_KEYS_FILE: "config/api-keys.json",
+    },
+    stdio: "ignore",
+  });
+  await waitForHealth(`http://127.0.0.1:${API_PORT}/health`);
+
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
 
@@ -181,6 +246,7 @@ async function main() {
   }
 
   await browser.close();
+  apiServer.kill();
   rmSync(join(ROOT, "data"), { recursive: true, force: true });
 }
 
