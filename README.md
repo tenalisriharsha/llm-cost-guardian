@@ -2,17 +2,18 @@
 
 A FinOps tool for LLM usage: ingest per-request token/cost events from multiple API keys and
 teams, enforce configurable budgets with hard/soft alerts, detect anomalous spend spikes, and
-attribute cost by team, API key, model, and provider.
+attribute cost by team, API key, model, and provider — via a CLI, an HTTP API, and a web
+dashboard.
 
 ## Project Status
 
 This project is built in public, one night at a time. See **[PROGRESS.md](PROGRESS.md)** for
 the architecture, the phased build plan, and exactly where work resumes next.
 
-**Current phase:** Phase 1 (core foundation) and Phase 2 (HTTP ingestion API + durable storage)
-are complete — validated ingestion, pluggable storage (in-memory, JSON-file, and SQLite), cost
-attribution, budget enforcement (CLI-static and API-managed CRUD), anomaly detection, a CLI, and
-an authenticated HTTP API, all with tests. Phase 3 (web dashboard) is next.
+**Current phase:** Phases 1–3 are complete — validated ingestion, pluggable storage (in-memory,
+JSON-file, and SQLite), cost attribution, budget enforcement (CLI-static and API-managed CRUD),
+anomaly detection, a CLI, an authenticated HTTP API, and a React dashboard on top of it, all with
+tests. Phase 4 (alerting & integrations) is next.
 
 ## Preview
 
@@ -46,6 +47,21 @@ here is hand-typed or mocked.
 
 **HTTP API — budgets are API-managed: `PUT /budgets/daily` then `GET /budgets/status` showing a hard breach**
 ![API budget status](docs/screenshots/09-api-budget-status.png)
+
+The four below are the React dashboard (`web/`), driven headlessly against a live API server
+seeded with real events — same rule, nothing hand-edited.
+
+**Dashboard — the connection gate: point it at any API base URL and team API key**
+![Dashboard connect](docs/screenshots/10-dashboard-connect.png)
+
+**Dashboard — budgets (a real hard breach and a real soft warning), cost attribution by model, and the anomaly section's honest empty state when a team doesn't have enough daily history yet**
+![Dashboard overview](docs/screenshots/11-dashboard-overview.png)
+
+**Dashboard — attribution dimension switched to provider, with the accessible table view toggled on**
+![Dashboard attribution table](docs/screenshots/12-dashboard-attribution-table.png)
+
+**Dashboard — a different team's anomaly timeline with a real flagged spend spike**
+![Dashboard anomaly timeline](docs/screenshots/13-dashboard-anomaly.png)
 
 ## Features
 
@@ -83,6 +99,24 @@ here is hand-typed or mocked.
   `Retry-After` once exceeded.
 - **Budgets CRUD** — `GET/PUT/DELETE /budgets/:period` and `GET /budgets/status`, all scoped to
   the caller's own team.
+
+### Phase 3 — web dashboard
+
+- **`GET /anomalies`** and **`GET /whoami`** — two small additions to the HTTP API: anomaly
+  results (previously CLI-only) scoped to the caller's team with optional `minBaselinePoints` /
+  `zScoreThreshold` overrides, and a who-am-I lookup the dashboard uses to confirm a connection
+  and label it by team.
+- **Permissive CORS** — every route is already gated by a bearer API key, so the API answers
+  cross-origin requests (and `OPTIONS` preflights) from any browser origin, including the
+  dashboard's own dev server port.
+- **React dashboard (`web/`)** — a standalone Vite + React + TypeScript app that talks to the API
+  directly from the browser: a connection gate (API base URL + API key, persisted to
+  `localStorage`), budget cards with live meters and an inline soft/hard-limit editor, a cost
+  attribution chart with dimension tabs and a table-view toggle, and an anomaly timeline chart
+  that flags real statistical outliers with a direct "ANOMALY" label — never color alone.
+- **Pure, unit-tested chart/format logic** — currency/token formatting, budget-meter percentage,
+  and the linear/point scale functions behind the bar and line charts are extracted into
+  `web/src/lib/` and tested independently of React.
 
 ## Quickstart
 
@@ -134,19 +168,37 @@ curl -s http://localhost:4000/budgets/status -H "Authorization: Bearer demo_plat
 plaintext keys to `(apiKeyId, team)`, same spirit as `fixtures/budgets.json`. Point
 `API_KEYS_FILE` at a real, git-ignored file for anything beyond local demos.
 
+### Running the dashboard
+
+```bash
+npm run serve             # API server, in one terminal (see above)
+
+cd web
+npm install                # first time only
+npm run dev                 # Vite dev server at http://localhost:5173
+```
+
+Open `http://localhost:5173`, enter the API's base URL (`http://localhost:4000` by default) and
+one of the demo keys from `config/api-keys.json`, and connect. `npm run dashboard:build` (from the
+repo root) type-checks and builds `web/dist` for a static deploy; `npm run dashboard:dev` is a
+root-level shortcut for the dev server above.
+
 ## Testing
 
 ```bash
-npm test         # run the full suite once
+npm test         # run the full suite once (core + API)
 npm run test:watch
 npm run typecheck
+
+npm run dashboard:test   # web/src/lib unit tests (format, scales — pure logic behind the charts)
 ```
 
-60 unit/integration tests cover ingestion validation, pricing, storage (in-memory, JSON-file, and
+67 unit/integration tests cover ingestion validation, pricing, storage (in-memory, JSON-file, and
 SQLite persistence — including idempotent dedup-by-id across all three), cost attribution, budget
 evaluation (daily/monthly, soft/hard, team-scoping) and the budgets CRUD store, anomaly detection,
-and the HTTP API (auth, per-team scoping, idempotent ingestion, budgets CRUD, rate limiting) run
-end-to-end against a live server via `fetch`.
+and the HTTP API (auth, per-team scoping, idempotent ingestion, budgets CRUD, anomalies, whoami,
+CORS, rate limiting) run end-to-end against a live server via `fetch`. The dashboard adds 17 more,
+unit-testing the formatting and chart-scale logic in `web/src/lib/` independently of React.
 
 ## Architecture
 

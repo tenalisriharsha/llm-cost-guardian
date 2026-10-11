@@ -8,9 +8,9 @@ render a cost-attribution dashboard (by team, API key, model, and provider).
 
 ## Architecture
 
-The system is split into a storage-agnostic **core domain** and thin **delivery layers** (CLI and
-HTTP API today, web dashboard planned) on top of it, so the budget/anomaly/attribution logic never
-depends on how events arrive or where they're persisted.
+The system is split into a storage-agnostic **core domain** and thin **delivery layers** (CLI,
+HTTP API, and a React dashboard) on top of it, so the budget/anomaly/attribution logic never
+depends on how events arrive, where they're persisted, or how they're viewed.
 
 ```
                        ┌──────────────────────┐
@@ -49,10 +49,17 @@ depends on how events arrive or where they're persisted.
       ┌────────────────────┐          ┌──────────────────────────┐
       │   CLI (src/cli)     │          │   HTTP API (src/api)      │
       │   commander-based   │          │   Express, Bearer auth,   │
-      │   ingest / report /  │         │   per-team scoping, fixed-│
-      │   budget check /    │          │   window rate limiting    │
-      │   anomaly scan      │          └──────────────────────────┘
-      └────────────────────┘
+      │   ingest / report /  │         │   per-team scoping, CORS, │
+      │   budget check /    │          │   fixed-window rate limit │
+      │   anomaly scan      │          └─────────────┬────────────┘
+      └────────────────────┘                         │ fetch, Bearer auth
+                                                       ▼
+                                         ┌──────────────────────────┐
+                                         │   Dashboard (web/)        │
+                                         │   Vite + React + TS,      │
+                                         │   budgets/attribution/    │
+                                         │   anomaly views           │
+                                         └──────────────────────────┘
 ```
 
 - `src/core/types.ts` — domain types: `UsageEvent`, `BudgetConfig`, `BudgetStatus`, `AnomalyResult`, `AttributionRow`.
@@ -65,10 +72,12 @@ depends on how events arrive or where they're persisted.
 - `src/core/budget.ts` — evaluates `BudgetConfig`s against current-period spend; returns soft/hard alert state.
 - `src/core/anomaly.ts` — buckets spend by team/day and flags days whose z-score (vs. that team's own expanding-window history) crosses a threshold.
 - `src/cli/` — `llm-cost-guardian ingest|report|budget check|anomaly scan`, with non-zero exit codes on alerts so it's cron/CI friendly.
-- `src/api/` — Express HTTP API (`createServer` factory in `server.ts`, bootstrapped in `index.ts`): `apiKeys.ts` loads a `Bearer`-token registry mapping each key to one `(apiKeyId, team)`; `rateLimit.ts` is a fixed-window limiter per key. Routes: `GET /health` (unauth'd), `POST /events`, `GET /report`, and `GET/PUT/DELETE /budgets[/:period]` + `GET /budgets/status` — every authenticated route is scoped to the caller's own team.
-- `config/api-keys.json` — demo API-key registry (3 keys, one per fixture team) consumed by the API server and the preview screenshots.
-- `fixtures/` + `scripts/generate-fixtures.mjs` — deterministic (seeded) sample datasets used by tests, manual runs, and the preview screenshots.
+- `src/api/` — Express HTTP API (`createServer` factory in `server.ts`, bootstrapped in `index.ts`): `apiKeys.ts` loads a `Bearer`-token registry mapping each key to one `(apiKeyId, team)`; `rateLimit.ts` is a fixed-window limiter per key. Routes: `GET /health` (unauth'd), `GET /whoami`, `POST /events`, `GET /report`, `GET /anomalies`, and `GET/PUT/DELETE /budgets[/:period]` + `GET /budgets/status` — every authenticated route is scoped to the caller's own team. A permissive CORS middleware (any origin, since every route is already bearer-gated) answers `OPTIONS` preflights for the dashboard.
+- `config/api-keys.json` — demo API-key registry (3 keys, one per fixture team) consumed by the API server, the dashboard, and the preview screenshots.
+- `fixtures/` + `scripts/generate-fixtures.mjs` — deterministic (seeded) sample datasets used by tests, manual runs, and the CLI/API preview screenshots.
 - `scripts/capture-screenshots.mjs` — runs real CLI commands and real `curl` calls against a live `dist/api` server, renders the captured output into terminal-window screenshots.
+- `scripts/capture-dashboard-screenshots.mjs` — seeds a live API server with realistic, wall-clock-anchored data (budgets and anomalies are evaluated against real "now", so fixture files with fixed anchor dates don't work here), serves the built dashboard via `vite preview`, and drives it with Playwright to screenshot every distinct view.
+- `web/` — standalone Vite + React + TypeScript dashboard, its own `package.json`/tests, talking to the API directly over `fetch` from the browser (no backend changes needed beyond the two new routes above). `web/src/lib/` holds the pure, unit-tested logic (`api.ts` client, `format.ts`, `scale.ts`, `palette.ts`); `web/src/components/` holds `ConnectionGate`, `BudgetsPanel`, `AttributionChart`, `AnomalyTimeline`.
 
 ## Phased Build Plan
 
@@ -95,10 +104,16 @@ depends on how events arrive or where they're persisted.
 - [x] 25 new tests (store dedup, SQL event/budget stores, full HTTP API via a live server + `fetch`) — 60 total, all passing
 - [x] 3 new preview screenshots of the HTTP API (ingest with per-team scoping, report, budgets CRUD + status)
 
-### Phase 3 — Dashboard & live attribution
-- [ ] Web dashboard (React) for cost attribution by team/key/model/provider
-- [ ] Budget status widgets reflecting live alert state
-- [ ] Anomaly timeline visualization per team
+### Phase 3 — Dashboard & live attribution (Night 3) ✅ done
+- [x] `GET /anomalies` (scoped to caller's team, optional `minBaselinePoints`/`zScoreThreshold` query overrides) and `GET /whoami`, plus permissive CORS so a browser dashboard can call the API cross-origin
+- [x] Standalone Vite + React + TypeScript dashboard (`web/`) with its own build/test pipeline
+- [x] Connection gate (API base URL + API key, validated via `/whoami`, persisted to `localStorage`)
+- [x] Cost attribution chart (dimension tabs: model/provider/apiKeyId/team) with a table-view accessibility toggle
+- [x] Budget status widgets: live meters, soft/warning/hard-critical status pills, and an inline editor (PUT) + delete, reflecting real alert state
+- [x] Anomaly timeline (SVG line chart) per team, flagged days marked with a direct "ANOMALY" label (never color alone), with a table-view toggle
+- [x] Pure chart/format logic (`web/src/lib/format.ts`, `scale.ts`) extracted and unit-tested independently of React — 17 tests
+- [x] Backend: 7 new tests for `/anomalies`, `/whoami`, and CORS — 67 total, all passing
+- [x] `scripts/capture-dashboard-screenshots.mjs` — seeds a live API server with wall-clock-anchored data and drives the real built dashboard with Playwright; 4 new preview screenshots (connect gate, budgets+attribution overview, attribution table view, anomaly spike)
 
 ### Phase 4 — Alerting & integrations
 - [ ] Slack/email/webhook delivery for budget and anomaly alerts
@@ -112,11 +127,19 @@ depends on how events arrive or where they're persisted.
 
 ## Where to resume (next session)
 
-Start **Phase 3**: build the React web dashboard against the existing `GET /report` and
-`GET /budgets/status` endpoints — no backend changes should be needed for the first cut. Serve it
-either as a separate Vite dev server proxying to the API, or statically from Express once built.
-Reuse `config/api-keys.json` demo keys for local dashboard auth. Anomaly results aren't exposed
-over HTTP yet (`detectAnomalies` is CLI-only) — add a `GET /anomalies` route scoped to the
-caller's team before wiring up the anomaly timeline view.
+Start **Phase 4**: alerting & integrations. The dashboard and anomaly timeline are read-only today
+— nothing actually notifies anyone when a budget breaches or an anomaly fires, you have to look.
+Concretely:
+- Pick one delivery channel first (Slack webhook is the simplest — a single `fetch` POST, no SDK)
+  and wire it to `evaluateBudgets`'/`detectAnomalies`' existing output; don't build a generic
+  multi-channel abstraction before there's a second channel that needs it.
+- Anomaly scans are currently on-demand only (CLI `anomaly scan` or dashboard page load). A cron
+  entry point (`node dist/cli/index.js anomaly scan --store ... --config ...` on a schedule) gets
+  you scheduled checks without new code; a real in-process scheduler is a bigger decision to make
+  deliberately, not default into.
+- The one-key-per-team auth model (`config/api-keys.json`) has no rotation or revocation story —
+  that's the natural next gap once alerts imply someone other than the original setup is relying
+  on this daily.
+Phase 5 (hardened/hashed keys, structured logging, deployment docs/container) comes after.
 
 STATUS: IN_PROGRESS
