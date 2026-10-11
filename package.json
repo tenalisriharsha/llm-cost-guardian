@@ -14,7 +14,10 @@
     "test:watch": "vitest",
     "cli": "tsx src/cli/index.ts",
     "serve": "tsx src/api/index.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dashboard:dev": "npm --prefix web run dev",
+    "dashboard:build": "npm --prefix web run build",
+    "dashboard:test": "npm --prefix web run test"
   },
   "dependencies": {
     "commander": "^12.1.0",
