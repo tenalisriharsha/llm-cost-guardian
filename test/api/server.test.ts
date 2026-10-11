@@ -66,6 +66,19 @@ describe("authentication", () => {
   });
 });
 
+describe("GET /whoami", () => {
+  it("returns the authenticated key's apiKeyId and team", async () => {
+    const res = await fetch(`${baseUrl}/whoami`, { headers: authed(PLATFORM_KEY) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ apiKeyId: "key-platform-prod", team: "platform" });
+  });
+
+  it("requires authentication", async () => {
+    const res = await fetch(`${baseUrl}/whoami`);
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("POST /events", () => {
   it("accepts events and fills in team/apiKeyId from the authenticated key", async () => {
     const res = await fetch(`${baseUrl}/events`, {
@@ -238,6 +251,68 @@ describe("budgets CRUD", () => {
       body: JSON.stringify({ softLimitUsd: 20, hardLimitUsd: 10 }),
     });
     expect(badLimits.status).toBe(400);
+  });
+});
+
+describe("GET /anomalies", () => {
+  it("scopes anomaly detection to the caller's own team", async () => {
+    const days = ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"];
+    for (const day of days) {
+      const tokens = day === "2026-10-05" ? 2_000_000 : 1000;
+      await fetch(`${baseUrl}/events`, {
+        method: "POST",
+        headers: { ...authed(PLATFORM_KEY), "content-type": "application/json" },
+        body: JSON.stringify([
+          {
+            timestamp: `${day}T12:00:00.000Z`,
+            provider: "anthropic",
+            model: "claude-sonnet-5-5",
+            inputTokens: tokens,
+            outputTokens: tokens,
+          },
+        ]),
+      });
+    }
+
+    const res = await fetch(`${baseUrl}/anomalies`, { headers: authed(PLATFORM_KEY) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.anomalies.length).toBeGreaterThan(0);
+    expect(body.anomalies.every((a: { team: string }) => a.team === "platform")).toBe(true);
+    expect(body.anomalies.some((a: { isAnomalous: boolean }) => a.isAnomalous)).toBe(true);
+
+    const growthView = await fetch(`${baseUrl}/anomalies`, { headers: authed(GROWTH_KEY) });
+    expect((await growthView.json()).anomalies).toEqual([]);
+  });
+
+  it("accepts minBaselinePoints/zScoreThreshold overrides and rejects invalid ones", async () => {
+    const ok = await fetch(`${baseUrl}/anomalies?minBaselinePoints=1&zScoreThreshold=1.5`, {
+      headers: authed(PLATFORM_KEY),
+    });
+    expect(ok.status).toBe(200);
+
+    const bad = await fetch(`${baseUrl}/anomalies?minBaselinePoints=not-a-number`, {
+      headers: authed(PLATFORM_KEY),
+    });
+    expect(bad.status).toBe(400);
+  });
+
+  it("requires authentication", async () => {
+    const res = await fetch(`${baseUrl}/anomalies`);
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("CORS", () => {
+  it("answers preflight requests without authentication", async () => {
+    const res = await fetch(`${baseUrl}/report`, { method: "OPTIONS" });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("sets CORS headers on authenticated responses", async () => {
+    const res = await fetch(`${baseUrl}/report`, { headers: authed(PLATFORM_KEY) });
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
 });
 

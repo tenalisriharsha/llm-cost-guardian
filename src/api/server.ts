@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import {
   attributeBy,
+  detectAnomalies,
   evaluateBudgets,
   ingestBatch,
   type AttributionDimension,
@@ -39,6 +40,19 @@ export function createServer(deps: ServerDeps) {
   const app = express();
   app.use(express.json({ limit: "1mb" }));
 
+  // Permissive CORS: every route below is already gated by a bearer API key, so allowing any
+  // browser origin (e.g. the dashboard's own dev server port) to call in costs nothing extra.
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
@@ -63,6 +77,10 @@ export function createServer(deps: ServerDeps) {
       return;
     }
     next();
+  });
+
+  app.get("/whoami", (req: Request, res: Response) => {
+    res.json(req.auth!);
   });
 
   app.post("/events", (req: Request, res: Response) => {
@@ -113,6 +131,31 @@ export function createServer(deps: ServerDeps) {
     }
     const events = eventStore.all().filter((event) => event.team === auth.team);
     res.json({ by, rows: attributeBy(events, by) });
+  });
+
+  app.get("/anomalies", (req: Request, res: Response) => {
+    const auth = req.auth!;
+    const events = eventStore.all().filter((event) => event.team === auth.team);
+
+    const options: { minBaselinePoints?: number; zScoreThreshold?: number } = {};
+    if (req.query.minBaselinePoints !== undefined) {
+      const parsed = Number(req.query.minBaselinePoints);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        res.status(400).json({ error: "minBaselinePoints must be a non-negative number" });
+        return;
+      }
+      options.minBaselinePoints = parsed;
+    }
+    if (req.query.zScoreThreshold !== undefined) {
+      const parsed = Number(req.query.zScoreThreshold);
+      if (!Number.isFinite(parsed)) {
+        res.status(400).json({ error: "zScoreThreshold must be a number" });
+        return;
+      }
+      options.zScoreThreshold = parsed;
+    }
+
+    res.json({ anomalies: detectAnomalies(events, options) });
   });
 
   const budgets = express.Router();
