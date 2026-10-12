@@ -2,7 +2,9 @@
 import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import {
+  anomalyAlerts,
   attributeBy,
+  budgetAlerts,
   detectAnomalies,
   evaluateBudgets,
   ingestBatch,
@@ -12,6 +14,7 @@ import {
   type BudgetConfig,
   type RawUsageEvent,
 } from "../core/index.js";
+import { sendSlackAlerts } from "../integrations/slack.js";
 import { formatUsd, renderTable } from "./format.js";
 
 function readJsonl<T>(path: string): T[] {
@@ -150,5 +153,64 @@ anomaly
     console.log(`\n${anomalyCount} anomalous day(s) out of ${results.length} scored`);
     if (anomalyCount > 0) process.exitCode = 1;
   });
+
+const alert = program.command("alert").description("Combined budget + anomaly check, optionally notifying Slack");
+
+alert
+  .command("check")
+  .description("Evaluate budgets and scan for anomalies together; posts to a Slack webhook if one is configured")
+  .option("-s, --store <path>", "event store file path", "data/events.jsonl")
+  .option("-c, --config <path>", "budgets config JSON path", "fixtures/budgets.json")
+  .option("-n, --now <iso>", "reference timestamp for the current period (defaults to now)")
+  .option("-t, --threshold <number>", "anomaly z-score threshold", "2.5")
+  .option("-m, --min-baseline <number>", "minimum baseline days required before scoring", "3")
+  .option("--slack-webhook <url>", "Slack incoming-webhook URL to notify (defaults to $SLACK_WEBHOOK_URL)")
+  .action(
+    async (opts: {
+      store: string;
+      config: string;
+      now?: string;
+      threshold: string;
+      minBaseline: string;
+      slackWebhook?: string;
+    }) => {
+      const store = new JsonFileEventStore(opts.store);
+      const events = store.all();
+      const configs = JSON.parse(readFileSync(opts.config, "utf8")) as BudgetConfig[];
+      const now = opts.now ? new Date(opts.now) : new Date();
+
+      const statuses = evaluateBudgets(events, configs, now);
+      const anomalies = detectAnomalies(events, {
+        zScoreThreshold: Number(opts.threshold),
+        minBaselinePoints: Number(opts.minBaseline),
+      });
+      const alerts = [...budgetAlerts(statuses), ...anomalyAlerts(anomalies)];
+
+      console.log(`Alert check as of ${now.toISOString()}\n`);
+      if (alerts.length === 0) {
+        console.log("No budget breaches or spend anomalies.");
+      } else {
+        for (const a of alerts) {
+          console.log(`[${a.severity.toUpperCase()}] (${a.kind}) ${a.summary}`);
+        }
+      }
+
+      const webhookUrl = opts.slackWebhook ?? process.env.SLACK_WEBHOOK_URL;
+      if (webhookUrl) {
+        const result = await sendSlackAlerts(alerts, webhookUrl);
+        if (alerts.length === 0) {
+          console.log("\nSlack webhook configured, nothing to send.");
+        } else if (result.sent) {
+          console.log(`\nSent ${alerts.length} alert(s) to Slack (status ${result.status}).`);
+        } else {
+          console.log(`\nFailed to notify Slack: ${result.error ?? `status ${result.status}`}`);
+        }
+      }
+
+      const hardCount = alerts.filter((a) => a.severity === "critical").length;
+      if (hardCount > 0) process.exitCode = 2;
+      else if (alerts.length > 0) process.exitCode = 1;
+    },
+  );
 
 program.parse();
