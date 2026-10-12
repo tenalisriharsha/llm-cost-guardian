@@ -10,10 +10,10 @@ dashboard.
 This project is built in public, one night at a time. See **[PROGRESS.md](PROGRESS.md)** for
 the architecture, the phased build plan, and exactly where work resumes next.
 
-**Current phase:** Phases 1–3 are complete — validated ingestion, pluggable storage (in-memory,
+**Current phase:** Phases 1–4 are complete — validated ingestion, pluggable storage (in-memory,
 JSON-file, and SQLite), cost attribution, budget enforcement (CLI-static and API-managed CRUD),
-anomaly detection, a CLI, an authenticated HTTP API, and a React dashboard on top of it, all with
-tests. Phase 4 (alerting & integrations) is next.
+anomaly detection, a CLI, an authenticated HTTP API, a React dashboard, and Slack-webhook alerting
+on top of it, all with tests. Phase 5 (hardening & deployment) is next.
 
 ## Preview
 
@@ -62,6 +62,15 @@ seeded with real events — same rule, nothing hand-edited.
 
 **Dashboard — a different team's anomaly timeline with a real flagged spend spike**
 ![Dashboard anomaly timeline](docs/screenshots/13-dashboard-anomaly.png)
+
+The two below are the new `alert check` command — a real Slack incoming-webhook receiver was run
+locally for the second one; the CLI actually posted to it.
+
+**`alert check` — a clean day: budgets under their soft limits, no anomalies, nothing to report**
+![Alert check clean](docs/screenshots/14-alert-check-clean.png)
+
+**`alert check --slack-webhook ...` — a hard budget breach and a flagged anomaly, posted to Slack for real (status 200)**
+![Alert check with Slack notification](docs/screenshots/15-alert-check-slack.png)
 
 ## Features
 
@@ -118,6 +127,22 @@ seeded with real events — same rule, nothing hand-edited.
   and the linear/point scale functions behind the bar and line charts are extracted into
   `web/src/lib/` and tested independently of React.
 
+### Phase 4 — alerting & integrations
+
+- **`alert check`** — a new CLI command that runs budget evaluation and anomaly detection
+  together in one pass and prints a combined, severity-ranked list (`budgetAlerts` /
+  `anomalyAlerts` in `src/core/alerts.ts` turn a soft breach into a `warning` and a hard breach or
+  a flagged anomaly into a `critical`). Same cron-friendly exit codes as the individual commands
+  (`2` on any critical alert, `1` on warning-only, `0` clean).
+- **Slack webhook delivery** — pass `--slack-webhook <url>` (or set `$SLACK_WEBHOOK_URL`) and
+  `alert check` posts every alert to a Slack incoming webhook in one message
+  (`src/integrations/slack.ts`). A clean check with no alerts never posts, so a cron job doesn't
+  spam the channel with "all clear" noise. The webhook URL is a plain fetch target — any endpoint
+  that accepts a JSON `{"text": "..."}` POST works, not just Slack specifically.
+- **Scheduled checks, no new scheduler** — `alert check` is a single, idempotent, read-only
+  command, so a cron entry (`* * * * * cd /path/to/repo && node dist/cli/index.js alert check
+  --slack-webhook "$SLACK_WEBHOOK_URL"`) is all scheduled alerting needs; see Quickstart below.
+
 ## Quickstart
 
 ```bash
@@ -138,9 +163,21 @@ node dist/cli/index.js budget check --store data/events.jsonl --config fixtures/
 
 # Scan for anomalous daily spend
 node dist/cli/index.js anomaly scan --store data/events.jsonl
+
+# Budgets + anomalies together, optionally notifying a Slack incoming webhook
+# (exits 2 on any critical alert, 1 on warning-only, 0 clean — cron/CI friendly either way)
+node dist/cli/index.js alert check --store data/events.jsonl --config fixtures/budgets.json \
+  --slack-webhook "$SLACK_WEBHOOK_URL"
 ```
 
 During local development you can skip the build step and run the CLI directly via `npm run cli -- <args>`.
+
+To run `alert check` on a schedule instead of on demand, point cron at the built CLI — no
+in-process scheduler needed:
+
+```
+*/15 * * * * cd /path/to/llm-cost-guardian && node dist/cli/index.js alert check --store data/events.jsonl --config fixtures/budgets.json --slack-webhook "$SLACK_WEBHOOK_URL" >> /var/log/llm-cost-guardian.log 2>&1
+```
 
 ### Running the HTTP API
 
@@ -193,12 +230,14 @@ npm run typecheck
 npm run dashboard:test   # web/src/lib unit tests (format, scales — pure logic behind the charts)
 ```
 
-67 unit/integration tests cover ingestion validation, pricing, storage (in-memory, JSON-file, and
+79 unit/integration tests cover ingestion validation, pricing, storage (in-memory, JSON-file, and
 SQLite persistence — including idempotent dedup-by-id across all three), cost attribution, budget
 evaluation (daily/monthly, soft/hard, team-scoping) and the budgets CRUD store, anomaly detection,
-and the HTTP API (auth, per-team scoping, idempotent ingestion, budgets CRUD, anomalies, whoami,
-CORS, rate limiting) run end-to-end against a live server via `fetch`. The dashboard adds 17 more,
-unit-testing the formatting and chart-scale logic in `web/src/lib/` independently of React.
+alert-event mapping (`src/core/alerts.ts`) and Slack-webhook delivery (payload formatting plus a
+mocked-`fetch` success/failure/no-op matrix for `sendSlackAlerts`), and the HTTP API (auth,
+per-team scoping, idempotent ingestion, budgets CRUD, anomalies, whoami, CORS, rate limiting) run
+end-to-end against a live server via `fetch`. The dashboard adds 17 more, unit-testing the
+formatting and chart-scale logic in `web/src/lib/` independently of React.
 
 ## Architecture
 

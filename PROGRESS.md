@@ -44,6 +44,17 @@ depends on how events arrive, where they're persisted, or how they're viewed.
             │          └──────────┬────────────┘        │
             └─────────────────────┼─────────────────────┘
                                   │
+                                  ▼
+                       ┌──────────────────────┐
+                       │   alerts.ts           │  BudgetStatus/AnomalyResult
+                       │   budgetAlerts /      │  -> severity-ranked AlertEvent[]
+                       │   anomalyAlerts       │
+                       └──────────┬────────────┘
+                                  ▼
+                       ┌──────────────────────┐
+                       │ integrations/slack.ts │  formats + posts AlertEvent[]
+                       │ sendSlackAlerts       │  to an incoming-webhook URL
+                       └──────────┬────────────┘
                  ┌────────────────┴────────────────┐
                  ▼                                  ▼
       ┌────────────────────┐          ┌──────────────────────────┐
@@ -51,9 +62,9 @@ depends on how events arrive, where they're persisted, or how they're viewed.
       │   commander-based   │          │   Express, Bearer auth,   │
       │   ingest / report /  │         │   per-team scoping, CORS, │
       │   budget check /    │          │   fixed-window rate limit │
-      │   anomaly scan      │          └─────────────┬────────────┘
-      └────────────────────┘                         │ fetch, Bearer auth
-                                                       ▼
+      │   anomaly scan /    │          └─────────────┬────────────┘
+      │   alert check       │                        │ fetch, Bearer auth
+      └────────────────────┘                         ▼
                                          ┌──────────────────────────┐
                                          │   Dashboard (web/)        │
                                          │   Vite + React + TS,      │
@@ -78,6 +89,9 @@ depends on how events arrive, where they're persisted, or how they're viewed.
 - `scripts/capture-screenshots.mjs` — runs real CLI commands and real `curl` calls against a live `dist/api` server, renders the captured output into terminal-window screenshots.
 - `scripts/capture-dashboard-screenshots.mjs` — seeds a live API server with realistic, wall-clock-anchored data (budgets and anomalies are evaluated against real "now", so fixture files with fixed anchor dates don't work here), serves the built dashboard via `vite preview`, and drives it with Playwright to screenshot every distinct view.
 - `web/` — standalone Vite + React + TypeScript dashboard, its own `package.json`/tests, talking to the API directly over `fetch` from the browser (no backend changes needed beyond the two new routes above). `web/src/lib/` holds the pure, unit-tested logic (`api.ts` client, `format.ts`, `scale.ts`, `palette.ts`); `web/src/components/` holds `ConnectionGate`, `BudgetsPanel`, `AttributionChart`, `AnomalyTimeline`.
+- `src/core/alerts.ts` — pure mapping functions: `budgetAlerts`/`anomalyAlerts` turn `BudgetStatus[]`/`AnomalyResult[]` into a flat `AlertEvent[]` (dropping anything with no alert), classifying a soft budget breach as `warning` and a hard breach or a flagged anomaly as `critical`. Delivery-channel-agnostic on purpose — nothing here knows about Slack.
+- `src/integrations/slack.ts` — `formatSlackPayload` (pure) renders `AlertEvent[]` into a Slack incoming-webhook `{text}` payload; `sendSlackAlerts` POSTs it via an injectable `fetch`, returns `{sent, status?, error?}`, and is a no-op (no network call) when there are nothing to send so a clean check never spams the channel.
+- `src/cli/index.ts` — new `alert check` command: runs `evaluateBudgets` + `detectAnomalies` together, prints the combined severity-ranked list, and posts to `--slack-webhook <url>` (or `$SLACK_WEBHOOK_URL`) if one is configured. Exit code `2` on any critical alert, `1` on warning-only, `0` clean — same cron-friendly convention as `budget check`/`anomaly scan`. No new scheduler: cron calling this command on an interval is the scheduled-checks story (documented in the README).
 
 ## Phased Build Plan
 
@@ -115,31 +129,40 @@ depends on how events arrive, where they're persisted, or how they're viewed.
 - [x] Backend: 7 new tests for `/anomalies`, `/whoami`, and CORS — 67 total, all passing
 - [x] `scripts/capture-dashboard-screenshots.mjs` — seeds a live API server with wall-clock-anchored data and drives the real built dashboard with Playwright; 4 new preview screenshots (connect gate, budgets+attribution overview, attribution table view, anomaly spike)
 
-### Phase 4 — Alerting & integrations
-- [ ] Slack/email/webhook delivery for budget and anomaly alerts
-- [ ] Scheduled anomaly scans (cron) instead of on-demand CLI runs
-- [ ] Multi-tenant auth beyond the current one-key-per-team model (key rotation, revocation, admin-scoped keys that can manage other teams' budgets)
+### Phase 4 — Alerting & integrations (Night 4) ✅ done
+- [x] `src/core/alerts.ts` — pure `budgetAlerts`/`anomalyAlerts` mapping functions, decoupled from any delivery channel
+- [x] `src/integrations/slack.ts` — Slack incoming-webhook delivery (also works as a generic JSON-webhook receiver since the payload is a plain `{text}` POST); no-ops on a clean check instead of sending an empty "all clear" message
+- [x] New CLI command `alert check` — runs budget + anomaly evaluation together, prints a combined severity-ranked report, posts to `--slack-webhook`/`$SLACK_WEBHOOK_URL` if configured, same cron-friendly exit-code convention as the existing commands
+- [x] Scheduled checks need no new scheduler: `alert check` is a single idempotent read-only command, so a cron entry is the whole story (documented in the README)
+- [x] 12 new tests (`alerts.ts` mapping, `slack.ts` payload formatting + a mocked-`fetch` success/failure/no-op matrix) — 79 total, all passing
+- [x] 2 new preview screenshots: a clean `alert check` run (no breaches, nothing sent) and a triggered run that really posts to a locally-run mock Slack webhook server (status 200 captured from the real response)
+- [ ] Email delivery and a generic multi-channel abstraction — intentionally deferred; Slack-shaped webhook delivery already covers "post this alert somewhere" for any receiver that accepts a JSON POST, and a second channel isn't needed yet to justify an abstraction
+- [ ] Multi-tenant auth beyond the current one-key-per-team model (key rotation, revocation, admin-scoped keys that can manage other teams' budgets) — pushed to Phase 5, see below
 
 ### Phase 5 — Hardening & deployment
 - [ ] Replace the plaintext demo API-key file with hashed/salted keys and a real secrets story
+- [ ] Key rotation / revocation / admin-scoped keys beyond the current one-key-per-team model (carried over from Phase 4)
 - [ ] Structured logging / metrics for observability
 - [ ] Deployment docs and a container image
 
 ## Where to resume (next session)
 
-Start **Phase 4**: alerting & integrations. The dashboard and anomaly timeline are read-only today
-— nothing actually notifies anyone when a budget breaches or an anomaly fires, you have to look.
+Start **Phase 5**: hardening & deployment. Everything through alerting now works end-to-end and
+is tested; what's left is making the deployed story trustworthy rather than adding new features.
 Concretely:
-- Pick one delivery channel first (Slack webhook is the simplest — a single `fetch` POST, no SDK)
-  and wire it to `evaluateBudgets`'/`detectAnomalies`' existing output; don't build a generic
-  multi-channel abstraction before there's a second channel that needs it.
-- Anomaly scans are currently on-demand only (CLI `anomaly scan` or dashboard page load). A cron
-  entry point (`node dist/cli/index.js anomaly scan --store ... --config ...` on a schedule) gets
-  you scheduled checks without new code; a real in-process scheduler is a bigger decision to make
-  deliberately, not default into.
-- The one-key-per-team auth model (`config/api-keys.json`) has no rotation or revocation story —
-  that's the natural next gap once alerts imply someone other than the original setup is relying
-  on this daily.
-Phase 5 (hardened/hashed keys, structured logging, deployment docs/container) comes after.
+- `config/api-keys.json` is a plaintext demo credential file (documented as such in the README),
+  with no rotation or revocation story and one key per team. That's the natural starting point —
+  it's the thing an operator would actually get burned by first (a leaked key has no way to be
+  revoked without editing the file and restarting the process).
+- No structured logging/metrics exist yet — the API only has Express's implicit behavior. Worth
+  deciding deliberately what "observability" means for a FinOps tool like this (request logs?
+  per-team ingestion volume as a metric? alert-delivery success/failure as a metric, since
+  `sendSlackAlerts` already returns a structured result that's just printed to stdout today) rather
+  than bolting on a generic logging library.
+- Deployment docs/container image come last — once the auth and observability stories are settled,
+  since both affect what the container needs to expose/mount (secrets file location, log
+  destination).
+Email/multi-channel alert delivery (deferred from Phase 4) can slot in here too if it comes up, but
+isn't blocking — Slack-webhook delivery already covers "notify a channel."
 
 STATUS: IN_PROGRESS
