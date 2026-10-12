@@ -13,6 +13,7 @@ const SCREENSHOTS_DIR = join(ROOT, "docs", "screenshots");
 const SPLIT_MARKER = "__LLM_COST_GUARDIAN_SCENE_SPLIT__";
 
 const API_PORT = 4321;
+const SLACK_PORT = 4322;
 const API_KEY = "demo_platform_f3a1c9"; // from config/api-keys.json (platform team, demo-only key)
 const TODAY = new Date().toISOString().slice(0, 10); // so the budget-status scene sees today's spend
 
@@ -92,6 +93,30 @@ const SCENES = [
       },
     ],
   },
+  {
+    file: "14-alert-check-clean.png",
+    commands: [
+      { cmd: "node dist/cli/index.js ingest fixtures/clean-events.jsonl --store data/events-clean.jsonl" },
+      {
+        cmd:
+          "node dist/cli/index.js alert check --store data/events-clean.jsonl --config fixtures/budgets.json " +
+          "--now 2026-10-09T12:00:00Z",
+        captureExit: true,
+      },
+    ],
+  },
+  {
+    file: "15-alert-check-slack.png",
+    commands: [
+      { cmd: "node dist/cli/index.js ingest fixtures/anomaly-events.jsonl --store data/events-alert.jsonl" },
+      {
+        cmd:
+          "node dist/cli/index.js alert check --store data/events-alert.jsonl --config fixtures/budgets.json " +
+          `--now 2026-10-01T12:00:00Z --slack-webhook http://localhost:${SLACK_PORT}/webhook`,
+        captureExit: true,
+      },
+    ],
+  },
 ];
 
 function escapeHtml(text) {
@@ -103,6 +128,8 @@ function highlight(escaped) {
     .replace(/HARD BREACH/g, '<span class="bad">HARD BREACH</span>')
     .replace(/soft warning/g, '<span class="warn">soft warning</span>')
     .replace(/\bANOMALY\b/g, '<span class="bad">ANOMALY</span>')
+    .replace(/\[CRITICAL\]/g, '<span class="bad">[CRITICAL]</span>')
+    .replace(/\[WARNING\]/g, '<span class="warn">[WARNING]</span>')
     .replace(/^Rejected .+$/gm, (m) => `<span class="warn">${m}</span>`);
 }
 
@@ -232,6 +259,15 @@ async function main() {
   });
   await waitForHealth(`http://127.0.0.1:${API_PORT}/health`);
 
+  // Runs as its own OS process, not in-process: a scene's synchronous spawnSync call blocks
+  // this orchestrator's event loop, so an in-process mock server would never get to answer.
+  const slackServer = spawn("node", ["scripts/mock-slack-server.mjs"], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(SLACK_PORT) },
+    stdio: "ignore",
+  });
+  await waitForHealth(`http://127.0.0.1:${SLACK_PORT}/health`);
+
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
 
@@ -247,6 +283,7 @@ async function main() {
 
   await browser.close();
   apiServer.kill();
+  slackServer.kill();
   rmSync(join(ROOT, "data"), { recursive: true, force: true });
 }
 
