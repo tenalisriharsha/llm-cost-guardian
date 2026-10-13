@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+docs
+web
+test
+coverage
+*.log
+.git
+.DS_Store

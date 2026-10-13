@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - DB_PATH=/app/data/guardian.db
+      - API_KEYS_FILE=/app/config/api-keys.json
+      - RATE_LIMIT_PER_MIN=120
+    volumes:
+      - guardian-data:/app/data
+      # Swap in a real, git-ignored key file for anything beyond a local demo:
+      # - ./config/api-keys.prod.json:/app/config/api-keys.json:ro
+
+volumes:
+  guardian-data:
