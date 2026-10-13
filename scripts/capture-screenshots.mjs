@@ -1,7 +1,7 @@
 // Runs real CLI invocations against the built dist/ output, captures their actual
 // stdout/stderr/exit code, and renders each as a screenshot of a terminal-window HTML
 // template. Nothing here hand-edits, reorders, or rewords command output.
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
@@ -15,10 +15,17 @@ const SPLIT_MARKER = "__LLM_COST_GUARDIAN_SCENE_SPLIT__";
 const API_PORT = 4321;
 const SLACK_PORT = 4322;
 const API_KEY = "demo_platform_f3a1c9"; // from config/api-keys.json (platform team, demo-only key)
+const GROWTH_KEY = "demo_growth_7b2e40"; // growth team, demo-only key
+const ADMIN_KEY = "demo_admin_8f12a0"; // admin role, demo-only key
 const TODAY = new Date().toISOString().slice(0, 10); // so the budget-status scene sees today's spend
 
 rmSync(join(ROOT, "data"), { recursive: true, force: true });
+mkdirSync(join(ROOT, "data"), { recursive: true });
 mkdirSync(SCREENSHOTS_DIR, { recursive: true });
+// A scratch copy so the `keys create`/`keys revoke` scenes mutate something disposable, not the
+// real committed config/api-keys.json the live API server (and every other scene) authenticates
+// against.
+copyFileSync(join(ROOT, "config", "api-keys.json"), join(ROOT, "data", "api-keys-scratch.json"));
 
 // Each scene is a sequence of real commands run once, in order, in a single bash -c
 // invocation (so a `captureExit` command's `echo $?` reflects the true exit status of
@@ -94,6 +101,43 @@ const SCENES = [
     ],
   },
   {
+    file: "16-keys-create-and-list.png",
+    commands: [
+      {
+        cmd: "node dist/cli/index.js keys create --id key-staging-01 --team staging --file data/api-keys-scratch.json",
+      },
+      { cmd: "node dist/cli/index.js keys list --file data/api-keys-scratch.json" },
+    ],
+  },
+  {
+    file: "17-keys-revoke.png",
+    commands: [
+      { cmd: "node dist/cli/index.js keys revoke key-staging-01 --file data/api-keys-scratch.json" },
+      { cmd: "node dist/cli/index.js keys list --file data/api-keys-scratch.json" },
+    ],
+  },
+  {
+    file: "18-admin-cross-team-report.png",
+    commands: [
+      {
+        cmd:
+          `curl -s -X POST http://localhost:${API_PORT}/events ` +
+          `-H "Authorization: Bearer ${GROWTH_KEY}" -H "Content-Type: application/json" ` +
+          `-d '[{"timestamp":"${TODAY}T09:30:00.000Z","provider":"openai","model":"gpt-4o-mini","inputTokens":600,"outputTokens":250}]' | jq .`,
+      },
+      {
+        cmd: `curl -s "http://localhost:${API_PORT}/report?by=model&team=growth" -H "Authorization: Bearer ${ADMIN_KEY}" | jq .`,
+      },
+      {
+        cmd: `curl -s "http://localhost:${API_PORT}/report?by=model&team=growth" -H "Authorization: Bearer ${API_KEY}" | jq .`,
+      },
+    ],
+  },
+  {
+    file: "19-api-metrics.png",
+    commands: [{ cmd: `curl -s http://localhost:${API_PORT}/metrics` }],
+  },
+  {
     file: "14-alert-check-clean.png",
     commands: [
       { cmd: "node dist/cli/index.js ingest fixtures/clean-events.jsonl --store data/events-clean.jsonl" },
@@ -130,7 +174,8 @@ function highlight(escaped) {
     .replace(/\bANOMALY\b/g, '<span class="bad">ANOMALY</span>')
     .replace(/\[CRITICAL\]/g, '<span class="bad">[CRITICAL]</span>')
     .replace(/\[WARNING\]/g, '<span class="warn">[WARNING]</span>')
-    .replace(/^Rejected .+$/gm, (m) => `<span class="warn">${m}</span>`);
+    .replace(/^Rejected .+$/gm, (m) => `<span class="warn">${m}</span>`)
+    .replace(/\brevoked\b/g, '<span class="warn">revoked</span>');
 }
 
 /** Runs every command in the scene exactly once, in one shell, and returns per-command output/exit. */
