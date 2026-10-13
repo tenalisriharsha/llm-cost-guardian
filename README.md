@@ -10,10 +10,12 @@ dashboard.
 This project is built in public, one night at a time. See **[PROGRESS.md](PROGRESS.md)** for
 the architecture, the phased build plan, and exactly where work resumes next.
 
-**Current phase:** Phases 1–4 are complete — validated ingestion, pluggable storage (in-memory,
-JSON-file, and SQLite), cost attribution, budget enforcement (CLI-static and API-managed CRUD),
-anomaly detection, a CLI, an authenticated HTTP API, a React dashboard, and Slack-webhook alerting
-on top of it, all with tests. Phase 5 (hardening & deployment) is next.
+**Current phase:** All five phases are complete — validated ingestion, pluggable storage
+(in-memory, JSON-file, and SQLite), cost attribution, budget enforcement (CLI-static and
+API-managed CRUD), anomaly detection, a CLI, an authenticated HTTP API with hashed/role-scoped
+API keys, a React dashboard, Slack-webhook alerting, structured logging + Prometheus metrics, and
+a container image, all with tests. See [DAILY_REPORT.md](DAILY_REPORT.md) for the full build
+summary.
 
 ## Preview
 
@@ -71,6 +73,20 @@ locally for the second one; the CLI actually posted to it.
 
 **`alert check --slack-webhook ...` — a hard budget breach and a flagged anomaly, posted to Slack for real (status 200)**
 ![Alert check with Slack notification](docs/screenshots/15-alert-check-slack.png)
+
+The four below are Phase 5: key management, role-scoped admin access, and observability.
+
+**`keys create` then `keys list` — a fresh key is generated, hashed, and appended; the raw value is shown exactly once**
+![Keys create and list](docs/screenshots/16-keys-create-and-list.png)
+
+**`keys revoke` — the key is marked revoked in place and can no longer authenticate, without deleting its audit trail**
+![Keys revoke](docs/screenshots/17-keys-revoke.png)
+
+**An `admin`-role key reads another team's report via `?team=growth`; a `team`-role key passing the same query param is silently ignored and still sees only its own data**
+![Admin cross-team report](docs/screenshots/18-admin-cross-team-report.png)
+
+**`GET /metrics` — Prometheus text exposition: request counts by status, rate-limit rejections, auth failures, and events ingested by team**
+![API metrics](docs/screenshots/19-api-metrics.png)
 
 ## Features
 
@@ -143,6 +159,36 @@ locally for the second one; the CLI actually posted to it.
   command, so a cron entry (`* * * * * cd /path/to/repo && node dist/cli/index.js alert check
   --slack-webhook "$SLACK_WEBHOOK_URL"`) is all scheduled alerting needs; see Quickstart below.
 
+### Phase 5 — hardening & deployment
+
+- **Hashed API keys, real secrets story** — `config/api-keys.json` now stores a SHA-256 hash per
+  key (`src/api/apiKeys.ts`), never the plaintext. A leaked config file can't be used to
+  authenticate. `ApiKeyRegistry.fromFile` loads the hashed, at-rest format; the plaintext
+  constructor still exists for tests and for freshly-generated keys before they're persisted.
+- **Key lifecycle CLI** — `llm-cost-guardian keys create|list|revoke` (`src/api/keyManagement.ts`)
+  generates a random `lcg_...` key, shows it exactly once, and appends its hash; `revoke` marks a
+  key dead in place (no deletion, so the audit trail survives) without needing to restart anything
+  but the API process that re-reads the file.
+- **Admin-scoped keys** — a key's `role` is `team` (default, confined to its own team) or `admin`.
+  An admin key can read/manage any team's report, anomalies, and budgets via `?team=<name>`, and
+  can ingest events on behalf of any team; a `team`-role key passing the same query param is
+  silently ignored, not an error, and still only sees its own data.
+- **Structured logging** — `src/api/logging.ts` emits one JSON line per HTTP request (method,
+  path, status, duration, caller identity) to stdout, plus startup/shutdown events, instead of
+  Express's implicit console output — pipeable straight into a log shipper or `jq`.
+- **Prometheus metrics** — `GET /metrics` (unauthenticated, like `/health` — meant to sit behind
+  network policy, not public) exposes request counts by status, rate-limit rejections, auth
+  failures, and events ingested per team, in Prometheus text exposition format.
+- **Container image** — a multi-stage `Dockerfile` (no native deps to compile; `node:sqlite` is
+  built in) plus a `docker-compose.yml` with a named volume for the SQLite file; see Deployment
+  below.
+- **27 new tests** (key hashing/revocation, key-lifecycle CRUD, metrics counters + Prometheus
+  format, structured-logger output, admin-scoped-key server behavior) — 106 total in the core/API
+  suite, all passing.
+- **4 new preview screenshots**: `keys create`/`keys list`, `keys revoke`, an admin key reading
+  another team's data (and a team key being correctly denied the same), and a real `/metrics`
+  scrape.
+
 ## Quickstart
 
 ```bash
@@ -199,11 +245,35 @@ curl -s -X PUT http://localhost:4000/budgets/daily \
   -d '{"softLimitUsd":0.01,"hardLimitUsd":0.05}'
 
 curl -s http://localhost:4000/budgets/status -H "Authorization: Bearer demo_platform_f3a1c9"
+
+# an admin-role key can act on behalf of any team via ?team=
+curl -s "http://localhost:4000/report?by=model&team=growth" -H "Authorization: Bearer demo_admin_8f12a0"
+
+# Prometheus-style scrape target, unauthenticated like /health
+curl -s http://localhost:4000/metrics
 ```
 
-`config/api-keys.json` is a **demo-only** credential file committed for local testing — it maps
-plaintext keys to `(apiKeyId, team)`, same spirit as `fixtures/budgets.json`. Point
-`API_KEYS_FILE` at a real, git-ignored file for anything beyond local demos.
+`config/api-keys.json` is a **demo-only** credential file committed for local testing. It maps a
+SHA-256 **hash** of each key to `(apiKeyId, team, role)` — the raw keys above are only in this
+README and in the screenshot-capture scripts, never in the file itself. Point `API_KEYS_FILE` at
+a real, git-ignored file for anything beyond local demos.
+
+### Managing API keys
+
+```bash
+# generates a new key, prints it once (only its hash is ever stored), and appends it
+node dist/cli/index.js keys create --id key-platform-staging --team platform --role team
+
+node dist/cli/index.js keys list
+
+# marks a key dead in place; takes effect once the API process re-reads the key file
+node dist/cli/index.js keys revoke key-platform-staging
+```
+
+All three default to `config/api-keys.json`; pass `--file <path>` to target another key file. The
+API server loads the key file once at startup (`ApiKeyRegistry.fromFile` in `src/api/index.ts`) —
+there's no file-watching or hot reload, so a revocation only takes effect after the API process is
+restarted. Known limitation, not a bug: documented in DAILY_REPORT.md.
 
 ### Running the dashboard
 
@@ -220,6 +290,42 @@ one of the demo keys from `config/api-keys.json`, and connect. `npm run dashboar
 repo root) type-checks and builds `web/dist` for a static deploy; `npm run dashboard:dev` is a
 root-level shortcut for the dev server above.
 
+## Deployment
+
+The HTTP API builds into a container image. `node:sqlite` (used by `SqlEventStore` and
+`SqlBudgetConfigStore`) is a built-in Node driver, not a native module, so there's no compiler
+toolchain to bake into the image.
+
+```bash
+docker compose up --build
+# or, without compose:
+docker build -t llm-cost-guardian .
+docker run -p 4000:4000 -v guardian-data:/app/data llm-cost-guardian
+```
+
+What to know before running this anywhere beyond a laptop:
+
+- **The demo key file ships in the image.** `config/api-keys.json`'s hashes correspond to the
+  same demo raw keys used throughout this README — fine for trying the image locally, not for
+  anything reachable from outside your machine. Mount a real file over it:
+  `-v ./config/api-keys.prod.json:/app/config/api-keys.json:ro` (or the equivalent `volumes:`
+  entry already commented out in `docker-compose.yml`), generated via `keys create` above.
+- **The SQLite file needs a persistent volume** (`DB_PATH`, default `/app/data/guardian.db`) or
+  every event/budget is lost on container restart — `docker-compose.yml` wires up a named volume
+  for this; `docker run` needs the `-v` shown above.
+- **`GET /health`** backs the image's `HEALTHCHECK` and is also what every orchestrator's liveness
+  probe should hit; **`GET /metrics`** is unauthenticated by design (same reasoning as `/health`)
+  so a Prometheus scrape config doesn't need a credential — put it behind network policy /
+  firewall rules, not behind the application's own auth.
+- **Logs are structured JSON lines to stdout** (`src/api/logging.ts`) — redirect/collect them the
+  same way you would any container's stdout; no log file path to mount.
+- `PORT`, `DB_PATH`, `API_KEYS_FILE`, and `RATE_LIMIT_PER_MIN` are all configurable via environment
+  variables (see `docker-compose.yml` and `src/api/index.ts`).
+
+There's no Dockerfile for the React dashboard — `npm run dashboard:build` produces a static
+`web/dist` you can serve from anything that serves static files (the API itself doesn't need to
+know the dashboard exists; CORS is already permissive for exactly this reason).
+
 ## Testing
 
 ```bash
@@ -230,14 +336,17 @@ npm run typecheck
 npm run dashboard:test   # web/src/lib unit tests (format, scales — pure logic behind the charts)
 ```
 
-79 unit/integration tests cover ingestion validation, pricing, storage (in-memory, JSON-file, and
+106 unit/integration tests cover ingestion validation, pricing, storage (in-memory, JSON-file, and
 SQLite persistence — including idempotent dedup-by-id across all three), cost attribution, budget
 evaluation (daily/monthly, soft/hard, team-scoping) and the budgets CRUD store, anomaly detection,
 alert-event mapping (`src/core/alerts.ts`) and Slack-webhook delivery (payload formatting plus a
-mocked-`fetch` success/failure/no-op matrix for `sendSlackAlerts`), and the HTTP API (auth,
-per-team scoping, idempotent ingestion, budgets CRUD, anomalies, whoami, CORS, rate limiting) run
-end-to-end against a live server via `fetch`. The dashboard adds 17 more, unit-testing the
-formatting and chart-scale logic in `web/src/lib/` independently of React.
+mocked-`fetch` success/failure/no-op matrix for `sendSlackAlerts`), API-key hashing/revocation and
+the key-lifecycle CRUD helpers (`src/api/apiKeys.ts`, `keyManagement.ts`), the structured logger
+and Prometheus-format metrics counters, and the HTTP API (auth, per-team scoping, admin-scoped
+cross-team access, idempotent ingestion, budgets CRUD, anomalies, whoami, CORS, rate limiting,
+`/metrics`) run end-to-end against a live server via `fetch`. The dashboard adds 17 more,
+unit-testing the formatting and chart-scale logic in `web/src/lib/` independently of React — 123
+tests in total.
 
 ## Architecture
 

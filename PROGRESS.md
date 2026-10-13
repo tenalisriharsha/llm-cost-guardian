@@ -83,15 +83,19 @@ depends on how events arrive, where they're persisted, or how they're viewed.
 - `src/core/budget.ts` — evaluates `BudgetConfig`s against current-period spend; returns soft/hard alert state.
 - `src/core/anomaly.ts` — buckets spend by team/day and flags days whose z-score (vs. that team's own expanding-window history) crosses a threshold.
 - `src/cli/` — `llm-cost-guardian ingest|report|budget check|anomaly scan`, with non-zero exit codes on alerts so it's cron/CI friendly.
-- `src/api/` — Express HTTP API (`createServer` factory in `server.ts`, bootstrapped in `index.ts`): `apiKeys.ts` loads a `Bearer`-token registry mapping each key to one `(apiKeyId, team)`; `rateLimit.ts` is a fixed-window limiter per key. Routes: `GET /health` (unauth'd), `GET /whoami`, `POST /events`, `GET /report`, `GET /anomalies`, and `GET/PUT/DELETE /budgets[/:period]` + `GET /budgets/status` — every authenticated route is scoped to the caller's own team. A permissive CORS middleware (any origin, since every route is already bearer-gated) answers `OPTIONS` preflights for the dashboard.
-- `config/api-keys.json` — demo API-key registry (3 keys, one per fixture team) consumed by the API server, the dashboard, and the preview screenshots.
+- `src/api/` — Express HTTP API (`createServer` factory in `server.ts`, bootstrapped in `index.ts`): `apiKeys.ts` loads a `Bearer`-token registry mapping each key's SHA-256 hash to `(apiKeyId, team, role)`; `rateLimit.ts` is a fixed-window limiter per key. Routes: `GET /health` and `GET /metrics` (unauth'd), `GET /whoami`, `POST /events`, `GET /report`, `GET /anomalies`, and `GET/PUT/DELETE /budgets[/:period]` + `GET /budgets/status` — every authenticated route is scoped to the caller's own team, except an `admin`-role key, which can target any team via `?team=<name>`. A permissive CORS middleware (any origin, since every route is already bearer-gated) answers `OPTIONS` preflights for the dashboard.
+- `src/api/keyManagement.ts` — `generateRawKey`/`createKey`/`revokeKey`/`loadKeyFile`/`saveKeyFile`, the pure helpers behind the CLI's `keys create|list|revoke`; a raw key is only ever returned once, at creation, never re-derivable from its stored hash.
+- `src/api/logging.ts` — `createLogger()` emits one JSON line per event (request, startup) to stdout/stderr; `noopLogger` is the default for tests and anywhere logging isn't wanted.
+- `src/api/metrics.ts` — `Metrics`, an in-memory counter set (requests by status, rate-limit rejections, auth failures, events ingested per team) rendered as Prometheus text exposition at `GET /metrics`.
+- `config/api-keys.json` — demo API-key registry (3 team keys + 1 admin key) storing only hashes, never raw keys, consumed by the API server, the dashboard, and the preview screenshots.
 - `fixtures/` + `scripts/generate-fixtures.mjs` — deterministic (seeded) sample datasets used by tests, manual runs, and the CLI/API preview screenshots.
 - `scripts/capture-screenshots.mjs` — runs real CLI commands and real `curl` calls against a live `dist/api` server, renders the captured output into terminal-window screenshots.
 - `scripts/capture-dashboard-screenshots.mjs` — seeds a live API server with realistic, wall-clock-anchored data (budgets and anomalies are evaluated against real "now", so fixture files with fixed anchor dates don't work here), serves the built dashboard via `vite preview`, and drives it with Playwright to screenshot every distinct view.
 - `web/` — standalone Vite + React + TypeScript dashboard, its own `package.json`/tests, talking to the API directly over `fetch` from the browser (no backend changes needed beyond the two new routes above). `web/src/lib/` holds the pure, unit-tested logic (`api.ts` client, `format.ts`, `scale.ts`, `palette.ts`); `web/src/components/` holds `ConnectionGate`, `BudgetsPanel`, `AttributionChart`, `AnomalyTimeline`.
 - `src/core/alerts.ts` — pure mapping functions: `budgetAlerts`/`anomalyAlerts` turn `BudgetStatus[]`/`AnomalyResult[]` into a flat `AlertEvent[]` (dropping anything with no alert), classifying a soft budget breach as `warning` and a hard breach or a flagged anomaly as `critical`. Delivery-channel-agnostic on purpose — nothing here knows about Slack.
 - `src/integrations/slack.ts` — `formatSlackPayload` (pure) renders `AlertEvent[]` into a Slack incoming-webhook `{text}` payload; `sendSlackAlerts` POSTs it via an injectable `fetch`, returns `{sent, status?, error?}`, and is a no-op (no network call) when there are nothing to send so a clean check never spams the channel.
-- `src/cli/index.ts` — new `alert check` command: runs `evaluateBudgets` + `detectAnomalies` together, prints the combined severity-ranked list, and posts to `--slack-webhook <url>` (or `$SLACK_WEBHOOK_URL`) if one is configured. Exit code `2` on any critical alert, `1` on warning-only, `0` clean — same cron-friendly convention as `budget check`/`anomaly scan`. No new scheduler: cron calling this command on an interval is the scheduled-checks story (documented in the README).
+- `src/cli/index.ts` — `alert check` command: runs `evaluateBudgets` + `detectAnomalies` together, prints the combined severity-ranked list, and posts to `--slack-webhook <url>` (or `$SLACK_WEBHOOK_URL`) if one is configured. Exit code `2` on any critical alert, `1` on warning-only, `0` clean — same cron-friendly convention as `budget check`/`anomaly scan`. No new scheduler: cron calling this command on an interval is the scheduled-checks story (documented in the README). Also `keys create|list|revoke`, the CLI face of `src/api/keyManagement.ts`.
+- `Dockerfile` + `docker-compose.yml` — multi-stage image (build stage compiles TS, runtime stage installs only production deps); no native module to compile since `node:sqlite` is built in. A named volume persists the SQLite file; `API_KEYS_FILE` is meant to be remounted to a real, git-ignored key file in anything beyond a local demo.
 
 ## Phased Build Plan
 
@@ -139,30 +143,31 @@ depends on how events arrive, where they're persisted, or how they're viewed.
 - [ ] Email delivery and a generic multi-channel abstraction — intentionally deferred; Slack-shaped webhook delivery already covers "post this alert somewhere" for any receiver that accepts a JSON POST, and a second channel isn't needed yet to justify an abstraction
 - [ ] Multi-tenant auth beyond the current one-key-per-team model (key rotation, revocation, admin-scoped keys that can manage other teams' budgets) — pushed to Phase 5, see below
 
-### Phase 5 — Hardening & deployment
-- [ ] Replace the plaintext demo API-key file with hashed/salted keys and a real secrets story
-- [ ] Key rotation / revocation / admin-scoped keys beyond the current one-key-per-team model (carried over from Phase 4)
-- [ ] Structured logging / metrics for observability
-- [ ] Deployment docs and a container image
+### Phase 5 — Hardening & deployment (Night 5) ✅ done
+- [x] `config/api-keys.json` now stores a per-key SHA-256 hash, never the raw key (`src/api/apiKeys.ts`); `ApiKeyRegistry.fromFile` authenticates by hashing the incoming bearer token and looking it up, so a leaked config file isn't a usable credential
+- [x] Key-lifecycle CLI (`keys create|list|revoke`, `src/api/keyManagement.ts`) — generates a random `lcg_...` key shown exactly once, appends its hashed record, and can mark a key `revokedAt` in place (deletion would lose the audit trail)
+- [x] Admin-scoped keys — a key's `role` (`team`, the default, or `admin`) is part of its `AuthContext`; an admin key can read/manage any team's report/anomalies/budgets via `?team=<name>` and ingest on behalf of any team, while a team-role key's own `?team=` is silently ignored (not an error) rather than bypassing its own scoping
+- [x] Structured logging (`src/api/logging.ts`) — one JSON line per HTTP request (method, path, status, duration, caller identity) plus startup, replacing ad-hoc `console.log`
+- [x] Prometheus-format metrics (`src/api/metrics.ts`) at `GET /metrics` (unauthenticated like `/health`, meant to sit behind network policy) — request counts by status, rate-limit rejections, auth failures, events ingested per team
+- [x] Multi-stage `Dockerfile` (no native deps — `node:sqlite` is built in) + `docker-compose.yml` with a named volume for the SQLite file; verified the production-dependency-only runtime actually boots and serves `/health`/`/whoami`
+- [x] 27 new tests (API-key hashing/revocation, key-lifecycle CRUD + file round-trip, metrics counters + Prometheus-format output, structured-logger output, admin-scoped-key and `/metrics` server behavior) — 106 in the core/API suite, all passing
+- [x] 4 new preview screenshots: `keys create`+`keys list`, `keys revoke`, an admin key reading another team's data (and a team key correctly denied the same), and a real `/metrics` scrape
+- [ ] Hot-reload / SIGHUP reload of the key file — a revocation only takes effect on API process restart today; documented as a known limitation rather than solved, since it needs a deliberate choice (file watcher vs. explicit reload endpoint vs. moving keys into the SQL store) not a quick patch
+- [ ] Email delivery and a generic multi-channel alert abstraction — still deferred from Phase 4; Slack-shaped webhook delivery covers "notify a channel" for any JSON-POST receiver, so a second channel isn't needed yet to justify the abstraction
 
 ## Where to resume (next session)
 
-Start **Phase 5**: hardening & deployment. Everything through alerting now works end-to-end and
-is tested; what's left is making the deployed story trustworthy rather than adding new features.
-Concretely:
-- `config/api-keys.json` is a plaintext demo credential file (documented as such in the README),
-  with no rotation or revocation story and one key per team. That's the natural starting point —
-  it's the thing an operator would actually get burned by first (a leaked key has no way to be
-  revoked without editing the file and restarting the process).
-- No structured logging/metrics exist yet — the API only has Express's implicit behavior. Worth
-  deciding deliberately what "observability" means for a FinOps tool like this (request logs?
-  per-team ingestion volume as a metric? alert-delivery success/failure as a metric, since
-  `sendSlackAlerts` already returns a structured result that's just printed to stdout today) rather
-  than bolting on a generic logging library.
-- Deployment docs/container image come last — once the auth and observability stories are settled,
-  since both affect what the container needs to expose/mount (secrets file location, log
-  destination).
-Email/multi-channel alert delivery (deferred from Phase 4) can slot in here too if it comes up, but
-isn't blocking — Slack-webhook delivery already covers "notify a channel."
+All five planned phases are complete and tested end-to-end (see DAILY_REPORT.md for the full
+summary). If this project picks back up, the two open items carried forward are:
+- **Key-file hot reload.** `ApiKeyRegistry.fromFile` only runs once, at `src/api/index.ts` startup,
+  so `keys revoke` doesn't take effect until the API process restarts. Worth deciding the shape
+  before building it: a periodic re-read, a SIGHUP handler, or moving key storage into
+  `SqlBudgetConfigStore`'s database instead of a flat file (which would also make `keys create`/
+  `revoke` consistent across multiple API replicas, which a flat file per-instance isn't).
+- **Email / generic multi-channel alerting**, if a receiver besides Slack-shaped webhooks is
+  ever needed — `src/core/alerts.ts` already separates alert *evaluation* from *delivery*, so a
+  second `src/integrations/*.ts` module is the whole shape of the change.
+Neither is blocking anything — both are intentionally-deferred hardening, not missing core
+functionality.
 
-STATUS: IN_PROGRESS
+STATUS: COMPLETE
