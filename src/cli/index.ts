@@ -14,6 +14,7 @@ import {
   type BudgetConfig,
   type RawUsageEvent,
 } from "../core/index.js";
+import { createKey, loadKeyFile, revokeKey, saveKeyFile } from "../api/keyManagement.js";
 import { sendSlackAlerts } from "../integrations/slack.js";
 import { formatUsd, renderTable } from "./format.js";
 
@@ -212,5 +213,63 @@ alert
       else if (alerts.length > 0) process.exitCode = 1;
     },
   );
+
+const keys = program.command("keys").description("Manage API keys (config/api-keys.json by default)");
+
+keys
+  .command("create")
+  .description("Generate a new API key and append its hashed record to the key file; prints the raw key once")
+  .requiredOption("-i, --id <apiKeyId>", "unique id for this key, e.g. key-platform-staging")
+  .requiredOption("-t, --team <team>", "team this key is scoped to")
+  .option("-r, --role <role>", "team | admin", "team")
+  .option("-f, --file <path>", "API key file path", "config/api-keys.json")
+  .action((opts: { id: string; team: string; role: string; file: string }) => {
+    if (opts.role !== "team" && opts.role !== "admin") {
+      console.error(`invalid role "${opts.role}", expected "team" or "admin"`);
+      process.exitCode = 1;
+      return;
+    }
+    const records = loadKeyFile(opts.file);
+    if (records.some((r) => r.apiKeyId === opts.id)) {
+      console.error(`a key with id "${opts.id}" already exists in ${opts.file}`);
+      process.exitCode = 1;
+      return;
+    }
+    const { record, rawKey } = createKey({ apiKeyId: opts.id, team: opts.team, role: opts.role });
+    saveKeyFile(opts.file, [...records, record]);
+
+    console.log(`Created key "${opts.id}" (team=${opts.team}, role=${opts.role})`);
+    console.log(`\n  ${rawKey}\n`);
+    console.log("This is the only time the raw key is shown — only its hash is stored. Save it now.");
+  });
+
+keys
+  .command("list")
+  .description("List API key records (never the raw key or its hash)")
+  .option("-f, --file <path>", "API key file path", "config/api-keys.json")
+  .action((opts: { file: string }) => {
+    const records = loadKeyFile(opts.file);
+    console.log(
+      renderTable(
+        ["id", "team", "role", "created", "status"],
+        records.map((r) => [r.apiKeyId, r.team, r.role, r.createdAt.slice(0, 10), r.revokedAt ? "revoked" : "active"]),
+      ),
+    );
+  });
+
+keys
+  .command("revoke <apiKeyId>")
+  .description("Revoke an API key so it can no longer authenticate")
+  .option("-f, --file <path>", "API key file path", "config/api-keys.json")
+  .action((apiKeyId: string, opts: { file: string }) => {
+    const records = loadKeyFile(opts.file);
+    if (!revokeKey(records, apiKeyId)) {
+      console.error(`no active key with id "${apiKeyId}" found in ${opts.file}`);
+      process.exitCode = 1;
+      return;
+    }
+    saveKeyFile(opts.file, records);
+    console.log(`Revoked "${apiKeyId}" — it will no longer authenticate once the API server re-reads the key file.`);
+  });
 
 program.parse();

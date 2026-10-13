@@ -1,17 +1,30 @@
 [
   {
-    "key": "demo_platform_f3a1c9",
     "apiKeyId": "key-platform-prod",
-    "team": "platform"
+    "team": "platform",
+    "role": "team",
+    "keyHash": "edfd44c4b79c73d42f272ef8467cb218b7bbe187565c1dfb1ea40de5e1a7eae4",
+    "createdAt": "2026-10-13T00:00:00.000Z"
   },
   {
-    "key": "demo_growth_7b2e40",
     "apiKeyId": "key-growth-prod",
-    "team": "growth"
+    "team": "growth",
+    "role": "team",
+    "keyHash": "2ab078b317a9f3aad1aec7454d0b844454788e20005b60c9081cf0ea9b1f3fae",
+    "createdAt": "2026-10-13T00:00:00.000Z"
   },
   {
-    "key": "demo_research_d8c156",
     "apiKeyId": "key-research-prod",
-    "team": "research"
+    "team": "research",
+    "role": "team",
+    "keyHash": "ee6c1ef907caa4afd3e5527d81a637189e99d485611c2b949dfa205861595e7f",
+    "createdAt": "2026-10-13T00:00:00.000Z"
+  },
+  {
+    "apiKeyId": "key-admin-ops",
+    "team": "ops",
+    "role": "admin",
+    "keyHash": "b558d71f48c98303bbadc1763deb96e5faa2b35c6f12e7a992e869a5097f4ca0",
+    "createdAt": "2026-10-13T00:00:00.000Z"
   }
 ]

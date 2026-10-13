@@ -1,29 +1,37 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InMemoryEventStore } from "../../src/core/store.js";
 import { SqlBudgetConfigStore } from "../../src/core/budgetStore.js";
-import { ApiKeyRegistry } from "../../src/api/apiKeys.js";
+import { ApiKeyRegistry, hashApiKey } from "../../src/api/apiKeys.js";
+import { Metrics } from "../../src/api/metrics.js";
 import { FixedWindowRateLimiter } from "../../src/api/rateLimit.js";
 import { createServer } from "../../src/api/server.js";
 
 const PLATFORM_KEY = "test_platform_key";
 const GROWTH_KEY = "test_growth_key";
+const ADMIN_KEY = "test_admin_key";
 
 let baseUrl: string;
 let close: () => Promise<void>;
 let eventStore: InMemoryEventStore;
 let budgetStore: SqlBudgetConfigStore;
+let metrics: Metrics;
 
 function startServer(rateLimiter?: FixedWindowRateLimiter) {
   eventStore = new InMemoryEventStore();
   budgetStore = new SqlBudgetConfigStore(new DatabaseSync(":memory:"));
+  metrics = new Metrics();
   const apiKeys = new ApiKeyRegistry([
     { key: PLATFORM_KEY, apiKeyId: "key-platform-prod", team: "platform" },
     { key: GROWTH_KEY, apiKeyId: "key-growth-prod", team: "growth" },
+    { key: ADMIN_KEY, apiKeyId: "key-admin-ops", team: "ops", role: "admin" },
   ]);
 
-  const app = createServer({ eventStore, budgetStore, apiKeys, rateLimiter });
+  const app = createServer({ eventStore, budgetStore, apiKeys, rateLimiter, metrics });
   return new Promise<void>((resolve) => {
     const server = app.listen(0, () => {
       const { port } = server.address() as AddressInfo;
@@ -70,7 +78,7 @@ describe("GET /whoami", () => {
   it("returns the authenticated key's apiKeyId and team", async () => {
     const res = await fetch(`${baseUrl}/whoami`, { headers: authed(PLATFORM_KEY) });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ apiKeyId: "key-platform-prod", team: "platform" });
+    expect(await res.json()).toEqual({ apiKeyId: "key-platform-prod", team: "platform", role: "team" });
   });
 
   it("requires authentication", async () => {
@@ -327,5 +335,108 @@ describe("rate limiting", () => {
     const second = await fetch(`${baseUrl}/report`, { headers: authed(PLATFORM_KEY) });
     expect(second.status).toBe(429);
     expect(second.headers.get("retry-after")).not.toBeNull();
+  });
+});
+
+describe("admin-scoped keys", () => {
+  beforeEach(async () => {
+    await fetch(`${baseUrl}/events`, {
+      method: "POST",
+      headers: { ...authed(GROWTH_KEY), "content-type": "application/json" },
+      body: JSON.stringify([
+        {
+          timestamp: "2026-10-09T12:00:00.000Z",
+          provider: "anthropic",
+          model: "claude-sonnet-5-5",
+          inputTokens: 500,
+          outputTokens: 500,
+        },
+      ]),
+    });
+  });
+
+  it("lets an admin key read another team's report via ?team=", async () => {
+    const res = await fetch(`${baseUrl}/report?by=model&team=growth`, { headers: authed(ADMIN_KEY) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rows).toHaveLength(1);
+  });
+
+  it("ignores ?team= for a non-admin key — it still only sees its own team", async () => {
+    const res = await fetch(`${baseUrl}/report?by=model&team=growth`, { headers: authed(PLATFORM_KEY) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rows).toEqual([]);
+  });
+
+  it("lets an admin key manage another team's budgets via ?team=", async () => {
+    const put = await fetch(`${baseUrl}/budgets/daily?team=growth`, {
+      method: "PUT",
+      headers: { ...authed(ADMIN_KEY), "content-type": "application/json" },
+      body: JSON.stringify({ softLimitUsd: 5, hardLimitUsd: 10 }),
+    });
+    expect(put.status).toBe(200);
+    expect((await put.json()).budget.team).toBe("growth");
+
+    const growthView = await fetch(`${baseUrl}/budgets`, { headers: authed(GROWTH_KEY) });
+    expect((await growthView.json()).budgets).toEqual([
+      { team: "growth", period: "daily", softLimitUsd: 5, hardLimitUsd: 10 },
+    ]);
+  });
+
+  it("lets an admin key ingest events on behalf of another team", async () => {
+    const res = await fetch(`${baseUrl}/events`, {
+      method: "POST",
+      headers: { ...authed(ADMIN_KEY), "content-type": "application/json" },
+      body: JSON.stringify([
+        {
+          team: "research",
+          timestamp: "2026-10-09T12:00:00.000Z",
+          provider: "anthropic",
+          model: "claude-sonnet-5-5",
+          inputTokens: 10,
+          outputTokens: 10,
+        },
+      ]),
+    });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({ accepted: 1, rejected: 0 });
+    expect(eventStore.all().some((e) => e.team === "research")).toBe(true);
+  });
+});
+
+describe("revoked keys", () => {
+  it("rejects a key loaded from a file with a revokedAt set", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lcg-keys-"));
+    const file = join(dir, "api-keys.json");
+    writeFileSync(
+      file,
+      JSON.stringify([
+        {
+          apiKeyId: "key-revoked",
+          team: "platform",
+          role: "team",
+          keyHash: hashApiKey("some-revoked-key"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          revokedAt: "2026-01-02T00:00:00.000Z",
+        },
+      ]),
+    );
+
+    const registry = ApiKeyRegistry.fromFile(file);
+    expect(registry.authenticate("some-revoked-key")).toBeNull();
+  });
+});
+
+describe("GET /metrics", () => {
+  it("responds without authentication and reflects observed requests", async () => {
+    await fetch(`${baseUrl}/report`, { headers: authed(PLATFORM_KEY) });
+    await fetch(`${baseUrl}/report`); // unauthenticated, counted as an auth failure too
+
+    const res = await fetch(`${baseUrl}/metrics`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("llm_cost_guardian_requests_total");
+    expect(body).toContain("llm_cost_guardian_auth_failures_total 1");
   });
 });
