@@ -171,3 +171,15 @@ Neither is blocking anything — both are intentionally-deferred hardening, not 
 functionality.
 
 STATUS: COMPLETE
+
+## Build history (moved from README)
+
+This project is built in public, one night at a time. See **[PROGRESS.md](PROGRESS.md)** for
+the architecture, the phased build plan, and exactly where work resumes next.
+
+**Current phase:** All five phases are complete — validated ingestion, pluggable storage
+(in-memory, JSON-file, and SQLite), cost attribution, budget enforcement (CLI-static and
+API-managed CRUD), anomaly detection, a CLI, an authenticated HTTP API with hashed/role-scoped
+API keys, a React dashboard, Slack-webhook alerting, structured logging + Prometheus metrics, and
+a container image, all with tests. See [DAILY_REPORT.md](DAILY_REPORT.md) for the full build
+summary.

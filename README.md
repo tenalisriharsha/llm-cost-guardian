@@ -1,21 +1,11 @@
 # llm-cost-guardian
 
+[![CI](https://github.com/tenalisriharsha/llm-cost-guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/tenalisriharsha/llm-cost-guardian/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A FinOps tool for LLM usage: ingest per-request token/cost events from multiple API keys and
 teams, enforce configurable budgets with hard/soft alerts, detect anomalous spend spikes, and
 attribute cost by team, API key, model, and provider — via a CLI, an HTTP API, and a web
 dashboard.
-
-## Project Status
-
-This project is built in public, one night at a time. See **[PROGRESS.md](PROGRESS.md)** for
-the architecture, the phased build plan, and exactly where work resumes next.
-
-**Current phase:** All five phases are complete — validated ingestion, pluggable storage
-(in-memory, JSON-file, and SQLite), cost attribution, budget enforcement (CLI-static and
-API-managed CRUD), anomaly detection, a CLI, an authenticated HTTP API with hashed/role-scoped
-API keys, a React dashboard, Slack-webhook alerting, structured logging + Prometheus metrics, and
-a container image, all with tests. See [DAILY_REPORT.md](DAILY_REPORT.md) for the full build
-summary.
 
 ## Preview
 
@@ -351,3 +341,11 @@ tests in total.
 ## Architecture
 
 See [PROGRESS.md](PROGRESS.md) for the full architecture diagram and phased roadmap.
+
+## Status
+
+Complete at version 0.1. The phase-by-phase build history is in [PROGRESS.md](PROGRESS.md) and known limitations and ideas for next steps are in [DAILY_REPORT.md](DAILY_REPORT.md).
+
+## License
+
+[MIT](LICENSE)
