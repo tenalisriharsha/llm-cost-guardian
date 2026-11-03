@@ -88,8 +88,9 @@ The four below are Phase 5: key management, role-scoped admin access, and observ
 - **Automatic cost calculation** — if an event doesn't carry a `costUsd`, it's computed from a
   per-model USD/1K-token pricing table.
 - **Pluggable storage** — all logic is written against an `EventStore` interface, and every
-  implementation is idempotent: appending a previously-seen event id is a silent no-op, so
-  retried ingestion never double-counts spend.
+  implementation is idempotent on the event `id`: appending a previously-seen id is a silent no-op,
+  so a retried event is never double-counted. An event sent **without** an `id` is given a random
+  one, so a retry of it is counted again; send a stable id (your provider's request id works well).
 - **Cost attribution** — aggregate spend, tokens, and event counts by team, API key, model, or
   provider.
 - **Budget enforcement** — configure daily or monthly soft/hard limits per team; `budget check`
@@ -109,7 +110,8 @@ The four below are Phase 5: key management, role-scoped admin access, and observ
   exactly one `(apiKeyId, team)`. Ingested events are scoped to that team: a payload that claims a
   different team is rejected per-event, not silently relabeled or accepted.
 - **Idempotent ingestion over HTTP** — `POST /events` reports `accepted`, `duplicates`, and
-  `rejected` counts separately, so retrying a batch after a timeout is safe and observable.
+  `rejected` counts separately, so retrying a batch after a timeout is safe and observable, as long
+  as each event carries a stable `id`. Events without one get a random id and are counted again.
 - **Basic rate limiting** — a fixed-window limiter per authenticated API key, returning `429` with
   `Retry-After` once exceeded.
 - **Budgets CRUD** — `GET/PUT/DELETE /budgets/:period` and `GET /budgets/status`, all scoped to
@@ -194,16 +196,21 @@ node dist/cli/index.js ingest fixtures/sample-events.jsonl --store data/events.j
 # See cost attribution by team / apiKeyId / model / provider
 node dist/cli/index.js report --store data/events.jsonl --by team
 
-# Check budgets (exits 2 on a hard breach, 1 on a soft warning, 0 otherwise)
-node dist/cli/index.js budget check --store data/events.jsonl --config fixtures/budgets.json
+# Check budgets (exits 2 on a hard breach, 1 on a soft warning, 0 otherwise).
+# The sample events are dated 2026-10-07..09 and the check defaults to the current time, so pin
+# --now to see them; with real, current events leave --now off.
+node dist/cli/index.js budget check --store data/events.jsonl --config fixtures/budgets.json --now 2026-10-09T23:00:00Z
 
-# Scan for anomalous daily spend
-node dist/cli/index.js anomaly scan --store data/events.jsonl
+# Scan for anomalous daily spend. It needs more than 3 days of history per team, so use the
+# 11-day fixture, which ends in a growth-team spend spike
+node dist/cli/index.js ingest fixtures/anomaly-events.jsonl --store data/events-anomaly.jsonl
+node dist/cli/index.js anomaly scan --store data/events-anomaly.jsonl
 
-# Budgets + anomalies together, optionally notifying a Slack incoming webhook
-# (exits 2 on any critical alert, 1 on warning-only, 0 clean — cron/CI friendly either way)
-node dist/cli/index.js alert check --store data/events.jsonl --config fixtures/budgets.json \
-  --slack-webhook "$SLACK_WEBHOOK_URL"
+# Budgets + anomalies together (exits 2 on any critical alert, 1 on warning-only, 0 clean —
+# cron/CI friendly either way). Add --slack-webhook "$SLACK_WEBHOOK_URL" to notify a Slack
+# incoming webhook; drop --now when checking live data
+node dist/cli/index.js alert check --store data/events-anomaly.jsonl --config fixtures/budgets.json \
+  --now 2026-10-09T12:00:00Z
 ```
 
 During local development you can skip the build step and run the CLI directly via `npm run cli -- <args>`.
@@ -226,7 +233,7 @@ npm run serve
 # in another terminal — config/api-keys.json ships 3 demo keys, one per fixture team
 curl -s -X POST http://localhost:4000/events \
   -H "Authorization: Bearer demo_platform_f3a1c9" -H "Content-Type: application/json" \
-  -d '[{"timestamp":"2026-10-10T09:00:00.000Z","provider":"anthropic","model":"claude-opus-5-5","inputTokens":4200,"outputTokens":1800}]'
+  -d '[{"id":"req_demo_0001","timestamp":"2026-10-10T09:00:00.000Z","provider":"anthropic","model":"claude-opus-5-5","inputTokens":4200,"outputTokens":1800}]'
 
 curl -s "http://localhost:4000/report?by=model" -H "Authorization: Bearer demo_platform_f3a1c9"
 
