@@ -66,7 +66,8 @@ function buildSampleEvents() {
     }
   }
   events.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
-  return events;
+  // Stable ids make re-ingesting the file a no-op (events without an id would each get a random one).
+  return events.map((e, i) => ({ id: `sample-${String(i + 1).padStart(4, "0")}`, ...e }));
 }
 
 // --- fixtures/events-with-errors.jsonl: a small batch mixing valid rows with bad ones ---
@@ -144,7 +145,7 @@ function buildAnomalyEvents() {
     }
   }
   events.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
-  return events;
+  return events.map((e, i) => ({ id: `anomaly-${String(i + 1).padStart(4, "0")}`, ...e }));
 }
 
 // Tuned against sample-events.jsonl's day-0 (2026-10-09) spend so `budget check` demos
