@@ -13,6 +13,12 @@ function runIngest(file: string, store: string) {
   });
 }
 
+function runCli(args: string[]) {
+  return spawnSync("npx", ["tsx", cliEntry, ...args], {
+    encoding: "utf8",
+  });
+}
+
 describe("cli ingest", () => {
   let dir: string;
 
@@ -44,5 +50,112 @@ describe("cli ingest", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toMatch(/Rejected 1 event\(s\):/);
     expect(result.stdout).toMatch(/Ingested 1\/2 events/);
+  });
+});
+
+describe("cli anomaly scan / alert check with non-numeric options", () => {
+  let dir: string;
+  let storeFile: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "llm-cost-guardian-cli-anomaly-"));
+    storeFile = join(dir, "events.jsonl");
+    const ingestResult = runIngest("fixtures/anomaly-events.jsonl", storeFile);
+    expect(ingestResult.status).toBe(0);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("anomaly scan rejects a non-numeric --threshold instead of silently reporting zero anomalies", () => {
+    const result = runCli(["anomaly", "scan", "--store", storeFile, "--threshold", "abc"]);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/threshold/i);
+    // The known growth spend spike must not be silently swallowed as "0 anomalous day(s)".
+    expect(result.stdout).not.toMatch(/0 anomalous day\(s\)/);
+  });
+
+  it("anomaly scan rejects a non-numeric --min-baseline instead of silently scoring zero days", () => {
+    const result = runCli(["anomaly", "scan", "--store", storeFile, "--min-baseline", "xyz"]);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/min-?baseline/i);
+    // A NaN min-baseline must not make the scoring loop silently run over zero days.
+    expect(result.stdout).not.toMatch(/out of 0 scored/);
+  });
+
+  it("anomaly scan still works with a valid numeric --threshold and --min-baseline", () => {
+    const result = runCli([
+      "anomaly",
+      "scan",
+      "--store",
+      storeFile,
+      "--threshold",
+      "2.5",
+      "--min-baseline",
+      "3",
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toMatch(/1 anomalous day\(s\) out of 8 scored/);
+  });
+
+  it("alert check rejects a non-numeric --threshold instead of silently dropping the anomaly alert", () => {
+    const result = runCli([
+      "alert",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      "fixtures/budgets.json",
+      "--now",
+      "2026-10-09T12:00:00Z",
+      "--threshold",
+      "abc",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/threshold/i);
+  });
+
+  it("alert check rejects a non-numeric --min-baseline instead of silently dropping the anomaly alert", () => {
+    const result = runCli([
+      "alert",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      "fixtures/budgets.json",
+      "--now",
+      "2026-10-09T12:00:00Z",
+      "--min-baseline",
+      "xyz",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/min-?baseline/i);
+  });
+
+  it("alert check still works with a valid numeric --threshold and --min-baseline", () => {
+    const result = runCli([
+      "alert",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      "fixtures/budgets.json",
+      "--now",
+      "2026-10-09T12:00:00Z",
+      "--threshold",
+      "2.5",
+      "--min-baseline",
+      "3",
+    ]);
+
+    expect(result.status).toBe(2);
+    expect(result.stdout).toMatch(/\[CRITICAL\] \(budget\)/);
+    expect(result.stdout).toMatch(/\[CRITICAL\] \(anomaly\)/);
   });
 });

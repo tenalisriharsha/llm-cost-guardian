@@ -39,6 +39,25 @@ function readJsonl<T>(path: string): JsonlReadResult<T> {
   return { parsed, parseErrors };
 }
 
+function parseAnomalyOptions(opts: {
+  threshold: string;
+  minBaseline: string;
+}): { zScoreThreshold: number; minBaselinePoints: number } | null {
+  const zScoreThreshold = Number(opts.threshold);
+  if (!Number.isFinite(zScoreThreshold)) {
+    console.error(`invalid --threshold "${opts.threshold}": must be a number`);
+    process.exitCode = 1;
+    return null;
+  }
+  const minBaselinePoints = Number(opts.minBaseline);
+  if (!Number.isFinite(minBaselinePoints) || minBaselinePoints < 0) {
+    console.error(`invalid --min-baseline "${opts.minBaseline}": must be a non-negative number`);
+    process.exitCode = 1;
+    return null;
+  }
+  return { zScoreThreshold, minBaselinePoints };
+}
+
 const program = new Command();
 
 program
@@ -151,11 +170,11 @@ anomaly
   .option("-t, --threshold <number>", "z-score threshold", "2.5")
   .option("-m, --min-baseline <number>", "minimum baseline days required before scoring", "3")
   .action((opts: { store: string; threshold: string; minBaseline: string }) => {
+    const anomalyOptions = parseAnomalyOptions(opts);
+    if (!anomalyOptions) return;
+
     const store = new JsonFileEventStore(opts.store);
-    const results = detectAnomalies(store.all(), {
-      zScoreThreshold: Number(opts.threshold),
-      minBaselinePoints: Number(opts.minBaseline),
-    });
+    const results = detectAnomalies(store.all(), anomalyOptions);
 
     console.log(`Anomaly scan (threshold=${opts.threshold}, min baseline=${opts.minBaseline} days)\n`);
     console.log(
@@ -198,16 +217,16 @@ alert
       minBaseline: string;
       slackWebhook?: string;
     }) => {
+      const anomalyOptions = parseAnomalyOptions(opts);
+      if (!anomalyOptions) return;
+
       const store = new JsonFileEventStore(opts.store);
       const events = store.all();
       const configs = JSON.parse(readFileSync(opts.config, "utf8")) as BudgetConfig[];
       const now = opts.now ? new Date(opts.now) : new Date();
 
       const statuses = evaluateBudgets(events, configs, now);
-      const anomalies = detectAnomalies(events, {
-        zScoreThreshold: Number(opts.threshold),
-        minBaselinePoints: Number(opts.minBaseline),
-      });
+      const anomalies = detectAnomalies(events, anomalyOptions);
       const alerts = [...budgetAlerts(statuses), ...anomalyAlerts(anomalies)];
 
       console.log(`Alert check as of ${now.toISOString()}\n`);
