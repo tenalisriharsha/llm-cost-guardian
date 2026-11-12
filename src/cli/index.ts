@@ -18,10 +18,25 @@ import { createKey, loadKeyFile, revokeKey, saveKeyFile } from "../api/keyManage
 import { sendSlackAlerts } from "../integrations/slack.js";
 import { formatUsd, renderTable } from "./format.js";
 
-function readJsonl<T>(path: string): T[] {
+interface JsonlReadResult<T> {
+  parsed: T[];
+  parseErrors: Array<{ line: number; error: string }>;
+}
+
+function readJsonl<T>(path: string): JsonlReadResult<T> {
   const contents = readFileSync(path, "utf8").trim();
-  if (contents.length === 0) return [];
-  return contents.split("\n").map((line) => JSON.parse(line) as T);
+  if (contents.length === 0) return { parsed: [], parseErrors: [] };
+
+  const parsed: T[] = [];
+  const parseErrors: Array<{ line: number; error: string }> = [];
+  contents.split("\n").forEach((line, index) => {
+    try {
+      parsed.push(JSON.parse(line) as T);
+    } catch (err) {
+      parseErrors.push({ line: index + 1, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+  return { parsed, parseErrors };
 }
 
 const program = new Command();
@@ -36,21 +51,29 @@ program
   .description("Validate and ingest usage events from a JSONL file into the event store")
   .option("-s, --store <path>", "event store file path", "data/events.jsonl")
   .action((file: string, opts: { store: string }) => {
-    const raw = readJsonl<RawUsageEvent>(file);
+    const { parsed: raw, parseErrors } = readJsonl<RawUsageEvent>(file);
     const { accepted, rejected } = ingestBatch(raw);
+    const totalLines = raw.length + parseErrors.length;
 
     const store = new JsonFileEventStore(opts.store);
     const stored = store.appendMany(accepted);
     const duplicates = accepted.length - stored.length;
 
-    console.log(`Ingested ${stored.length}/${raw.length} events from ${file}`);
+    console.log(`Ingested ${stored.length}/${totalLines} events from ${file}`);
     if (duplicates > 0) console.log(`Skipped ${duplicates} duplicate event(s) already in the store`);
     console.log(`Accepted spend: ${formatUsd(totalSpendUsd(stored))}`);
     console.log(`Store: ${opts.store} (${store.all().length} events total)`);
 
-    if (rejected.length > 0) {
-      console.log(`\nRejected ${rejected.length} event(s):`);
-      for (const { raw: badRaw, error } of rejected) {
+    const allRejected = [
+      ...parseErrors.map(({ line, error }) => ({
+        raw: {} as RawUsageEvent,
+        error: `line ${line} is not valid JSON: ${error}`,
+      })),
+      ...rejected,
+    ];
+    if (allRejected.length > 0) {
+      console.log(`\nRejected ${allRejected.length} event(s):`);
+      for (const { raw: badRaw, error } of allRejected) {
         console.log(`  - ${badRaw.apiKeyId ?? "(unknown key)"} @ ${badRaw.timestamp ?? "(unknown time)"}: ${error}`);
       }
     }
