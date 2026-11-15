@@ -58,6 +58,17 @@ function parseAnomalyOptions(opts: {
   return { zScoreThreshold, minBaselinePoints };
 }
 
+function parseNow(now?: string): Date | null {
+  if (!now) return new Date();
+  const parsed = new Date(now);
+  if (Number.isNaN(parsed.getTime())) {
+    console.error(`invalid --now "${now}": could not parse as a date`);
+    process.exitCode = 1;
+    return null;
+  }
+  return parsed;
+}
+
 const program = new Command();
 
 program
@@ -134,7 +145,8 @@ budget
   .action((opts: { store: string; config: string; now?: string }) => {
     const store = new JsonFileEventStore(opts.store);
     const configs = JSON.parse(readFileSync(opts.config, "utf8")) as BudgetConfig[];
-    const now = opts.now ? new Date(opts.now) : new Date();
+    const now = parseNow(opts.now);
+    if (!now) return;
 
     const statuses = evaluateBudgets(store.all(), configs, now);
 
@@ -223,7 +235,8 @@ alert
       const store = new JsonFileEventStore(opts.store);
       const events = store.all();
       const configs = JSON.parse(readFileSync(opts.config, "utf8")) as BudgetConfig[];
-      const now = opts.now ? new Date(opts.now) : new Date();
+      const now = parseNow(opts.now);
+      if (!now) return;
 
       const statuses = evaluateBudgets(events, configs, now);
       const anomalies = detectAnomalies(events, anomalyOptions);
