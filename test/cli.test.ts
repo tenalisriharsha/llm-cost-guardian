@@ -159,3 +159,72 @@ describe("cli anomaly scan / alert check with non-numeric options", () => {
     expect(result.stdout).toMatch(/\[CRITICAL\] \(anomaly\)/);
   });
 });
+
+describe("cli budget check / alert check with an invalid --now", () => {
+  let dir: string;
+  let storeFile: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "llm-cost-guardian-cli-now-"));
+    storeFile = join(dir, "events.jsonl");
+    const ingestResult = runIngest("fixtures/sample-events.jsonl", storeFile);
+    expect(ingestResult.status).toBe(0);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("budget check rejects an unparseable --now instead of crashing with a raw stack trace", () => {
+    const result = runCli([
+      "budget",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      "fixtures/budgets.json",
+      "--now",
+      "not-a-date",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).not.toMatch(/RangeError/);
+    expect(result.stderr).not.toMatch(/at evaluateBudget/);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/invalid.*--now/i);
+  });
+
+  it("alert check rejects an unparseable --now instead of crashing with a raw stack trace", () => {
+    const result = runCli([
+      "alert",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      "fixtures/budgets.json",
+      "--now",
+      "not-a-date",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).not.toMatch(/RangeError/);
+    expect(result.stderr).not.toMatch(/at evaluateBudget/);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/invalid.*--now/i);
+  });
+
+  it("budget check still works with a valid --now", () => {
+    const result = runCli([
+      "budget",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      "fixtures/budgets.json",
+      "--now",
+      "2026-10-09T12:00:00Z",
+    ]);
+
+    expect(result.status).not.toBeNull();
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toMatch(/Budget check as of 2026-10-09T12:00:00\.000Z/);
+  });
+});
