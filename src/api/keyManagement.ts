@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { hashApiKey, type ApiKeyRole, type StoredApiKeyRecord } from "./apiKeys.js";
 
 /** `lcg_` prefix makes a leaked key greppable/identifiable in logs, same idea as `sk-`/`ghp_`. */
@@ -8,7 +8,7 @@ export function generateRawKey(): string {
 }
 
 export function loadKeyFile(filePath: string): StoredApiKeyRecord[] {
-  return JSON.parse(readFileSync(filePath, "utf8")) as StoredApiKeyRecord[];
+  return existsSync(filePath) ? (JSON.parse(readFileSync(filePath, "utf8")) as StoredApiKeyRecord[]) : [];
 }
 
 export function saveKeyFile(filePath: string, records: StoredApiKeyRecord[]): void {

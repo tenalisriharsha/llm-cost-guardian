@@ -228,3 +228,44 @@ describe("cli budget check / alert check with an invalid --now", () => {
     expect(result.stdout).toMatch(/Budget check as of 2026-10-09T12:00:00\.000Z/);
   });
 });
+
+describe("cli keys create / list / revoke against a key file that does not exist yet", () => {
+  let dir: string;
+  let keyFile: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "llm-cost-guardian-cli-keys-"));
+    keyFile = join(dir, "api-keys.prod.json");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keys create bootstraps a fresh key file instead of crashing with ENOENT", () => {
+    const result = runCli(["keys", "create", "--id", "key-fresh", "--team", "newteam", "--file", keyFile]);
+
+    expect(result.stderr).not.toMatch(/ENOENT/);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/Created key "key-fresh"/);
+
+    const list = runCli(["keys", "list", "--file", keyFile]);
+    expect(list.stdout).toMatch(/key-fresh/);
+    expect(list.stdout).toMatch(/newteam/);
+  });
+
+  it("keys list prints an empty table instead of crashing with ENOENT", () => {
+    const result = runCli(["keys", "list", "--file", keyFile]);
+
+    expect(result.stderr).not.toMatch(/ENOENT/);
+    expect(result.status).toBe(0);
+  });
+
+  it("keys revoke reports no matching key instead of crashing with ENOENT", () => {
+    const result = runCli(["keys", "revoke", "key-fresh", "--file", keyFile]);
+
+    expect(result.stderr).not.toMatch(/ENOENT/);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/no active key with id "key-fresh"/);
+  });
+});
