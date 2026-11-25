@@ -229,6 +229,115 @@ describe("cli budget check / alert check with an invalid --now", () => {
   });
 });
 
+describe("cli budget check / alert check with a missing or malformed --config", () => {
+  let dir: string;
+  let storeFile: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "llm-cost-guardian-cli-config-"));
+    storeFile = join(dir, "events.jsonl");
+    const ingestResult = runIngest("fixtures/sample-events.jsonl", storeFile);
+    expect(ingestResult.status).toBe(0);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("budget check rejects a missing --config file instead of crashing with a raw ENOENT stack trace", () => {
+    const result = runCli([
+      "budget",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      join(dir, "does-not-exist.json"),
+      "--now",
+      "2026-10-09T23:00:00Z",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).not.toMatch(/ENOENT/);
+    expect(result.stderr).not.toMatch(/at readFileSync/);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/invalid.*--config/i);
+  });
+
+  it("alert check rejects a missing --config file instead of crashing with a raw ENOENT stack trace", () => {
+    const result = runCli([
+      "alert",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      join(dir, "does-not-exist.json"),
+      "--now",
+      "2026-10-09T23:00:00Z",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).not.toMatch(/ENOENT/);
+    expect(result.stderr).not.toMatch(/at readFileSync/);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/invalid.*--config/i);
+  });
+
+  it("budget check rejects a malformed (non-JSON) --config file instead of crashing with a raw SyntaxError", () => {
+    const badConfig = join(dir, "bad-config.json");
+    writeFileSync(badConfig, "not json");
+
+    const result = runCli([
+      "budget",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      badConfig,
+      "--now",
+      "2026-10-09T23:00:00Z",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).not.toMatch(/SyntaxError/);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/invalid.*--config/i);
+  });
+
+  it("alert check rejects a malformed (non-JSON) --config file instead of crashing with a raw SyntaxError", () => {
+    const badConfig = join(dir, "bad-config.json");
+    writeFileSync(badConfig, "not json");
+
+    const result = runCli([
+      "alert",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      badConfig,
+      "--now",
+      "2026-10-09T23:00:00Z",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).not.toMatch(/SyntaxError/);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/invalid.*--config/i);
+  });
+
+  it("budget check still works with a valid --config file", () => {
+    const result = runCli([
+      "budget",
+      "check",
+      "--store",
+      storeFile,
+      "--config",
+      "fixtures/budgets.json",
+      "--now",
+      "2026-10-09T23:00:00Z",
+    ]);
+
+    expect(result.status).not.toBeNull();
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toMatch(/Budget check as of 2026-10-09T23:00:00\.000Z/);
+  });
+});
+
 describe("cli report with an invalid --by dimension", () => {
   let dir: string;
   let storeFile: string;
