@@ -62,4 +62,11 @@ describe("loadKeyFile / saveKeyFile", () => {
     saveKeyFile(file, [record]);
     expect(loadKeyFile(file)).toEqual([record]);
   });
+
+  it("treats a missing key file as an empty key list instead of throwing ENOENT", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lcg-keyfile-"));
+    const file = join(dir, "does-not-exist.json");
+
+    expect(loadKeyFile(file)).toEqual([]);
+  });
 });
