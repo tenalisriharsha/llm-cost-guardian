@@ -229,6 +229,41 @@ describe("cli budget check / alert check with an invalid --now", () => {
   });
 });
 
+describe("cli report with an invalid --by dimension", () => {
+  let dir: string;
+  let storeFile: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "llm-cost-guardian-cli-report-"));
+    storeFile = join(dir, "events.jsonl");
+    const ingestResult = runIngest("fixtures/sample-events.jsonl", storeFile);
+    expect(ingestResult.status).toBe(0);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects an unknown --by dimension instead of crashing with a raw TypeError", () => {
+    const result = runCli(["report", "--store", storeFile, "--by", "bogus"]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).not.toMatch(/TypeError/);
+    expect(result.stderr).not.toMatch(/at renderRow/);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/invalid.*dimension/i);
+  });
+
+  it("still works with each of the four supported --by dimensions", () => {
+    for (const dimension of ["team", "apiKeyId", "model", "provider"]) {
+      const result = runCli(["report", "--store", storeFile, "--by", dimension]);
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toMatch(new RegExp(`Cost attribution by ${dimension}`));
+    }
+  });
+});
+
 describe("cli keys create / list / revoke against a key file that does not exist yet", () => {
   let dir: string;
   let keyFile: string;

@@ -58,6 +58,17 @@ function parseAnomalyOptions(opts: {
   return { zScoreThreshold, minBaselinePoints };
 }
 
+const ATTRIBUTION_DIMENSIONS: AttributionDimension[] = ["team", "apiKeyId", "model", "provider"];
+
+function parseAttributionDimension(by: string): AttributionDimension | null {
+  if (!ATTRIBUTION_DIMENSIONS.includes(by as AttributionDimension)) {
+    console.error(`invalid dimension "${by}", expected one of ${ATTRIBUTION_DIMENSIONS.join(", ")}`);
+    process.exitCode = 1;
+    return null;
+  }
+  return by as AttributionDimension;
+}
+
 function parseNow(now?: string): Date | null {
   if (!now) return new Date();
   const parsed = new Date(now);
@@ -114,15 +125,18 @@ program
   .description("Print a cost attribution report broken down by a dimension")
   .option("-s, --store <path>", "event store file path", "data/events.jsonl")
   .option("-b, --by <dimension>", "team | apiKeyId | model | provider", "team")
-  .action((opts: { store: string; by: AttributionDimension }) => {
+  .action((opts: { store: string; by: string }) => {
+    const by = parseAttributionDimension(opts.by);
+    if (!by) return;
+
     const store = new JsonFileEventStore(opts.store);
     const events = store.all();
-    const rows = attributeBy(events, opts.by);
+    const rows = attributeBy(events, by);
 
-    console.log(`Cost attribution by ${opts.by} (${events.length} events, ${formatUsd(totalSpendUsd(events))} total)\n`);
+    console.log(`Cost attribution by ${by} (${events.length} events, ${formatUsd(totalSpendUsd(events))} total)\n`);
     console.log(
       renderTable(
-        [opts.by, "spend", "input tokens", "output tokens", "events"],
+        [by, "spend", "input tokens", "output tokens", "events"],
         rows.map((row) => [
           row.key,
           formatUsd(row.spendUsd),
