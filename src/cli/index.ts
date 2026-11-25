@@ -69,6 +69,26 @@ function parseAttributionDimension(by: string): AttributionDimension | null {
   return by as AttributionDimension;
 }
 
+function parseBudgetConfig(path: string): BudgetConfig[] | null {
+  let contents: string;
+  try {
+    contents = readFileSync(path, "utf8");
+  } catch (err) {
+    const reason =
+      err instanceof Error && "code" in err && err.code === "ENOENT" ? "no such file" : String(err);
+    console.error(`invalid --config "${path}": ${reason}`);
+    process.exitCode = 1;
+    return null;
+  }
+  try {
+    return JSON.parse(contents) as BudgetConfig[];
+  } catch (err) {
+    console.error(`invalid --config "${path}": ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+    return null;
+  }
+}
+
 function parseNow(now?: string): Date | null {
   if (!now) return new Date();
   const parsed = new Date(now);
@@ -157,8 +177,9 @@ budget
   .option("-c, --config <path>", "budgets config JSON path", "fixtures/budgets.json")
   .option("-n, --now <iso>", "reference timestamp for the current period (defaults to now)")
   .action((opts: { store: string; config: string; now?: string }) => {
+    const configs = parseBudgetConfig(opts.config);
+    if (!configs) return;
     const store = new JsonFileEventStore(opts.store);
-    const configs = JSON.parse(readFileSync(opts.config, "utf8")) as BudgetConfig[];
     const now = parseNow(opts.now);
     if (!now) return;
 
@@ -246,9 +267,10 @@ alert
       const anomalyOptions = parseAnomalyOptions(opts);
       if (!anomalyOptions) return;
 
+      const configs = parseBudgetConfig(opts.config);
+      if (!configs) return;
       const store = new JsonFileEventStore(opts.store);
       const events = store.all();
-      const configs = JSON.parse(readFileSync(opts.config, "utf8")) as BudgetConfig[];
       const now = parseNow(opts.now);
       if (!now) return;
 
